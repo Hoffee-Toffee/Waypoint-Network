@@ -142,6 +142,22 @@ const Physics = {
     )
   },
 
+  /**
+   * Calculate vessel speed in multiples of c.
+   * v = c * ((P * eta) / (kappa * M * R^2))^(1/n)
+   */
+  calculateVesselSpeed(station, massKg, bubbleRadiusM) {
+    const P =
+      station.solarFluxWm2 * station.solarCollectorAreaKm2 * 1e6 * 0.5 // 50% for drive
+    const eta = Sim.settings.eta ?? C.DRIVE_EFFICIENCY
+    const kappa = Sim.settings.kappa ?? C.KAPPA
+    const n = C.SPEED_EXPONENT
+
+    const inner = (P * eta) / (kappa * massKg * bubbleRadiusM ** 2)
+    if (inner <= 0) return 100 // minimum safe speed
+    return Math.pow(inner, 1 / n)
+  },
+
   // ── Line-of-sight ────────────────────────────────────────────────────────
 
   /**
@@ -172,7 +188,8 @@ const Physics = {
     const abz = posJ.z - posI.z
     const ab2 = abx * abx + aby * aby + abz * abz
 
-    for (const star of Object.values(starsById)) {
+    const stars = Array.isArray(starsById) ? starsById : Object.values(starsById)
+    for (const star of stars) {
       const starRadiusLY = star.radiusM / C.LY_IN_METRES
 
       // Point-to-SEGMENT distance (not infinite line).

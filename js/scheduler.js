@@ -170,13 +170,15 @@ const Scheduler = {
     for (const stId of Object.keys(this._windows)) {
       for (const key of Object.keys(this._windows[stId])) {
         for (const w of this._windows[stId][key]) {
+          if (w.isReceiver) continue
           if (w._visuallyDispatched) continue
           if (w.startSec > now) continue
           const msg = Sim.messageMap[w.messageId]
           if (!msg) continue
           const fromSt = Sim.stations[msg.sourceId]
           const toSt = Sim.stations[msg.destinationId]
-          if (fromSt && toSt) Queue.spawnSignalDot(fromSt, toSt, msg.type)
+          const speedC = this._getMsgSpeed(msg, fromSt)
+          if (fromSt && toSt) Queue.spawnSignalDot(fromSt, toSt, msg.type, speedC)
           if (msg.status === 'scheduled') msg.status = 'in_transit'
           w._visuallyDispatched = true
         }
@@ -261,42 +263,48 @@ const Scheduler = {
       // Use the per-tick cached value to avoid repeated orbital scans.
       const nextStation = Sim.stations[nextHopId]
       const windowSec = this._estimateWindowSec(msg)
-      const conduitKey = this._findFreeConduit(station, nextHopId, now, msg)
-      const slewSec = conduitKey
-        ? this._slewCost(station, conduitKey, nextHopId)
-        : 0
+      const pair = this._findChannelPair(station, nextStation, now, msg)
+      if (!pair) continue
+
+      const { sourceKey, targetKey } = pair
+      const csA = this._conduitState[station.id][sourceKey]
+      const csB = this._conduitState[nextStation.id][targetKey]
+
+      const isAlreadyAimed =
+        csA.currentTargetId === nextHopId && csA.sessionEndSec > now
+
+      const slewSec = isAlreadyAimed
+        ? 0
+        : Math.max(
+            this._slewCost(station, sourceKey, nextHopId),
+            this._slewCost(nextStation, targetKey, station.id),
+          )
+
       const losRemaining = this._losCache?.[bridge.id] ?? 0
       if (losRemaining < windowSec + slewSec) {
         msg.status = 'awaiting_alignment'
         continue
       }
 
-      // Find a conduit that can reach nextHopId
-      if (!conduitKey) continue
-
-      const cs = this._conduitState[station.id][conduitKey]
-      const stWindows = this._windows[station.id][conduitKey]
-
-      // Is the conduit already in a session with this same target?
-      const isAlreadyAimed =
-        cs.currentTargetId === nextHopId && cs.sessionEndSec > now
-
       let startSec, endSec
       if (isAlreadyAimed) {
         // Piggyback: extend the existing session, no slew cost
         startSec = now
-        endSec = cs.sessionEndSec + windowSec
-        cs.sessionEndSec = endSec
+        endSec = csA.sessionEndSec + windowSec
       } else {
-        // New target: starts after slew from current pointing (slewSec already computed above)
-        startSec = Math.max(now, cs.sessionEndSec) + slewSec
+        // New target: starts after slew from current pointing
+        startSec = Math.max(now, csA.sessionEndSec, csB.sessionEndSec) + slewSec
         endSec = startSec + windowSec
-        // Update conduit state to new target
-        cs.currentTargetId = nextHopId
-        cs.sessionEndSec = endSec
       }
 
-      stWindows.push({
+      // Update both conduit states
+      csA.currentTargetId = nextHopId
+      csA.sessionEndSec = endSec
+      csB.currentTargetId = station.id
+      csB.sessionEndSec = endSec
+
+      // Add window to sender
+      this._windows[station.id][sourceKey].push({
         targetId: nextHopId,
         startSec,
         endSec,
@@ -305,10 +313,22 @@ const Scheduler = {
         _delivered: false,
       })
 
+      // Add window to receiver (mark as receiver to avoid double processing)
+      this._windows[nextStation.id][targetKey].push({
+        targetId: station.id,
+        startSec,
+        endSec,
+        messageId: msgId,
+        isReceiver: true,
+        _visuallyDispatched: true,
+        _delivered: true,
+      })
+
       msg.status = 'scheduled'
       msg.scheduledDeparture = startSec
+      const speedC = this._getMsgSpeed(msg, station)
       msg.estimatedArrival =
-        endSec + (bridge.lengthLY / C.COMM_SIGNAL_SPEED_C) * C.YEAR_IN_SECONDS
+        endSec + (bridge.lengthLY / speedC) * C.YEAR_IN_SECONDS
 
       // Remove from outbound queue — now tracked by window
       station.outboundQueue.delete(msgId)
@@ -340,47 +360,79 @@ const Scheduler = {
     return Sim.adjacency[stationId] ?? []
   },
 
-  // Deferred Acceptance: find the best available conduit for this message.
-  //
-  // KEY RULE: a comm conduit is a physical device that can only point at ONE
-  // target at a time.  It cannot serve two different targets simultaneously.
-  // A conduit is eligible for targetId only if:
-  //   (a) it is idle (session has ended / never started), OR
-  //   (b) its current session is already aimed at targetId (piggybacking).
-  // If all conduits are mid-session with a different target, return null and
-  // the message stays queued until a conduit frees up.
-  _findFreeConduit(station, targetId, now, msg) {
+  // Find a free channel (conduit) pair between source and target.
+  // Bidirectional coordination: both stations must have a conduit available
+  // (either already pointing at each other or idle) to open a channel.
+  _findChannelPair(stationA, stationB, now, msg) {
     const useMain =
       msg.type === 'vessel_transit' || msg.type === 'drone_transit'
-    const candidates = useMain ? ['main'] : this._commConduitKeys(station)
 
     if (useMain) {
-      const targetStation = Sim.stations[targetId]
-      const star = Sim.stars[station.starId]
-      if (!Physics.isInMainConduitRange(station, targetStation, star))
-        return null
-    }
+      const starA = Sim.stars[stationA.starId]
+      const starB = Sim.stars[stationB.starId]
+      if (!Physics.isInMainConduitRange(stationA, stationB, starA)) return null
+      if (!Physics.isInMainConduitRange(stationB, stationA, starB)) return null
 
-    // Phase 1: conduit already in an active session aimed at this exact target
-    for (const key of candidates) {
-      const cs = this._conduitState[station.id]?.[key]
-      if (!cs) continue
-      if (cs.currentTargetId === targetId && cs.sessionEndSec > now) return key
-    }
+      const csA = this._conduitState[stationA.id]?.main
+      const csB = this._conduitState[stationB.id]?.main
+      if (!csA || !csB) return null
 
-    // Phase 2: idle conduit (session has ended or never started)
-    for (const key of candidates) {
-      const cs = this._conduitState[station.id]?.[key]
-      if (!cs) continue
-      if (cs.sessionEndSec <= now) return key
-    }
+      const aAimed = csA.currentTargetId === stationB.id && csA.sessionEndSec > now
+      const bAimed = csB.currentTargetId === stationA.id && csB.sessionEndSec > now
 
-    // All conduits are busy with different targets — cannot schedule yet
+      if (aAimed && bAimed) return { sourceKey: 'main', targetKey: 'main' }
+      if (csA.sessionEndSec <= now && csB.sessionEndSec <= now)
+        return { sourceKey: 'main', targetKey: 'main' }
+      return null
+    } else {
+      const keysA = this._commConduitKeys(stationA)
+      const keysB = this._commConduitKeys(stationB)
+
+      // Phase 1: channels already pointing at each other
+      for (const kA of keysA) {
+        const csA = this._conduitState[stationA.id][kA]
+        if (csA.currentTargetId === stationB.id && csA.sessionEndSec > now) {
+          for (const kB of keysB) {
+            const csB = this._conduitState[stationB.id][kB]
+            if (csB.currentTargetId === stationA.id && csB.sessionEndSec > now) {
+              return { sourceKey: kA, targetKey: kB }
+            }
+          }
+        }
+      }
+
+      // Phase 2: find two idle channels
+      for (const kA of keysA) {
+        const csA = this._conduitState[stationA.id][kA]
+        if (csA.sessionEndSec <= now) {
+          for (const kB of keysB) {
+            const csB = this._conduitState[stationB.id][kB]
+            if (csB.sessionEndSec <= now) {
+              return { sourceKey: kA, targetKey: kB }
+            }
+          }
+        }
+      }
+    }
     return null
   },
 
   _commConduitKeys(station) {
     return station.commConduits.map((_, i) => 'comm' + i)
+  },
+
+  _getMsgSpeed(msg, station) {
+    if (msg.type === 'vessel_transit') {
+      return Physics.calculateVesselSpeed(
+        station,
+        Sim.settings.vesselMassKg || C.VESSEL_MASS_KG,
+        Sim.settings.vesselBubbleRadiusM || C.VESSEL_BUBBLE_RADIUS_M,
+      )
+    }
+    if (msg.type === 'drone_transit') {
+      return C.DRONE_SPEED_C
+    }
+    return C.COMM_SIGNAL_SPEED_C
   },
 
   _estimateWindowSec(msg) {
@@ -445,7 +497,10 @@ const Scheduler = {
       return Object.values(wins).some((arr) =>
         arr.some(
           (w) =>
-            w.targetId === targetId && w.startSec <= now && w.endSec >= now,
+            !w.isReceiver &&
+            w.targetId === targetId &&
+            w.startSec <= now &&
+            w.endSec >= now,
         ),
       )
     }
@@ -486,14 +541,15 @@ const Scheduler = {
       for (const arr of Object.values(wins)) {
         for (const w of arr) {
           if (w.targetId !== targetId) continue
+          if (w.isReceiver) continue
           // Only deliver windows that have been visually dispatched (signal sent)
           if (!w._visuallyDispatched) continue
           if (w._delivered) continue
           const msg = Sim.messageMap[w.messageId]
           if (!msg || msg.status === 'delivered' || msg.status === 'failed')
             continue
-          const travelSec =
-            (bridge.lengthLY / C.COMM_SIGNAL_SPEED_C) * C.YEAR_IN_SECONDS
+          const speedC = this._getMsgSpeed(msg, Sim.stations[msg.sourceId])
+          const travelSec = (bridge.lengthLY / speedC) * C.YEAR_IN_SECONDS
           if (now < w.startSec + travelSec) continue
           msg.status = 'delivered'
           msg.actualDeparture = w.startSec

@@ -86,16 +86,26 @@ const Renderer = {
 
     // 5. Orbital rings + visibility arcs
     for (const station of Object.values(Sim.stations)) {
+      if (this.analysisModePath && !this.analysisModePath.includes(station.id))
+        continue
       this._drawOrbitRing(station)
     }
 
     // 6. Stars
     for (const star of Object.values(Sim.stars)) {
+      if (this.analysisModePath) {
+        const hasStationOnPath = this.analysisModePath.some(
+          (id) => Sim.stations[id]?.starId === star.id,
+        )
+        if (!hasStationOnPath) continue
+      }
       this._drawStar(star)
     }
 
     // 7. Station dots + conduit beam indicators
     for (const station of Object.values(Sim.stations)) {
+      if (this.analysisModePath && !this.analysisModePath.includes(station.id))
+        continue
       this._drawStation(station)
     }
 
@@ -111,6 +121,13 @@ const Renderer = {
   _drawSignals() {
     const ctx = this.ctx
     for (const sig of Sim.signals) {
+      if (this.analysisModePath) {
+        if (
+          !this.analysisModePath.includes(sig.fromId) ||
+          !this.analysisModePath.includes(sig.toId)
+        )
+          continue
+      }
       // Use current screen-space positions of the station dots so the travelling
       // dot stays on the visible bridge line even as stations orbit.
       const fromSt = Sim.stations[sig.fromId]
@@ -149,6 +166,14 @@ const Renderer = {
     for (const msg of Sim.messages) {
       if (!msg.path || msg.path.length < 2) continue
       if (msg.status === 'delivered' || msg.status === 'failed') continue
+
+      if (this.analysisModePath) {
+        // In analysis mode, only show the path if it matches the active path
+        const matches =
+          msg.path.length === this.analysisModePath.length &&
+          msg.path.every((v, i) => v === this.analysisModePath[i])
+        if (!matches) continue
+      }
 
       const isHighlighted = msg.id === UI._highlightedMsgId
       ctx.save()
@@ -232,6 +257,18 @@ const Renderer = {
       (s) => (s.distLY ?? 0) <= limit,
     )
     const stars = active.length > 0 ? active : Object.values(Sim.stars)
+    this._zoomToStars(stars)
+  },
+
+  zoomToPath(path) {
+    if (!path || path.length === 0) return
+    const stars = path
+      .map((stId) => Sim.stars[Sim.stations[stId]?.starId])
+      .filter(Boolean)
+    this._zoomToStars(stars)
+  },
+
+  _zoomToStars(stars) {
     if (stars.length === 0) return
     let minX = Infinity,
       maxX = -Infinity,
@@ -243,9 +280,9 @@ const Renderer = {
       minY = Math.min(minY, s.y)
       maxY = Math.max(maxY, s.y)
     }
-    const padFrac = 0.12
-    const spanX = maxX - minX || 1
-    const spanY = maxY - minY || 1
+    const padFrac = 0.15
+    const spanX = maxX - minX || 0.1
+    const spanY = maxY - minY || 0.1
     const scaleX = (this.width * (1 - 2 * padFrac)) / spanX
     const scaleY = (this.height * (1 - 2 * padFrac)) / spanY
     this.scale = Math.max(5, Math.min(500, Math.min(scaleX, scaleY)))
@@ -284,6 +321,15 @@ const Renderer = {
     }
 
     for (const bridge of Object.values(Sim.bridges)) {
+      // Filter by analysis path
+      if (this.analysisModePath) {
+        const idxA = this.analysisModePath.indexOf(bridge.stationAId)
+        const idxB = this.analysisModePath.indexOf(bridge.stationBId)
+        const onPath =
+          idxA !== -1 && idxB !== -1 && Math.abs(idxA - idxB) === 1
+        if (!onPath) continue
+      }
+
       // A bridge renders as "active" (bright) if it has LOS OR a signal is
       // currently in flight along it — never dim a line under a moving dot.
       // Also apply a short flicker buffer so rapid single-tick LOS drops don't flash.
@@ -595,6 +641,9 @@ const Renderer = {
 
   // Current display filter: 'both' | 'comm' | 'main'
   bridgeFilter: 'both',
+
+  // If set to an array of station IDs, only render those and their connections
+  analysisModePath: null,
 
   _onWheel(e) {
     e.preventDefault()

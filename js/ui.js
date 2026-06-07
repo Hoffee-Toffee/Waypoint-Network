@@ -64,13 +64,25 @@ const UI = {
 
     // Global physics inputs
     this._bindNumberInput('input-kappa', (v) => {
-      C_MUT.KAPPA = v
+      Sim.settings.kappa = v
     })
     this._bindNumberInput('input-lambda', (v) => {
-      C_MUT.LAMBDA = v
+      Sim.settings.lambda = v
+    })
+    this._bindNumberInput('input-drone-mass', (v) => {
+      Sim.settings.droneMassKg = v
+    })
+    this._bindNumberInput('input-drone-bubble', (v) => {
+      Sim.settings.droneBubbleRadiusM = v
+    })
+    this._bindNumberInput('input-vessel-mass', (v) => {
+      Sim.settings.vesselMassKg = v
+    })
+    this._bindNumberInput('input-vessel-bubble', (v) => {
+      Sim.settings.vesselBubbleRadiusM = v
     })
     this._bindRangeInput('input-eta', (v) => {
-      C_MUT.DRIVE_EFFICIENCY = v
+      Sim.settings.eta = v
       document.getElementById('lbl-eta').textContent = v.toFixed(2)
     })
 
@@ -183,6 +195,28 @@ const UI = {
     document
       .getElementById('btn-filter-main')
       .addEventListener('click', () => setFilter('main'))
+
+    // Tabs
+    const tabManifest = document.getElementById('tab-manifest')
+    const tabAnalyst = document.getElementById('tab-analyst')
+    const panelManifest = document.getElementById('manifest-panel')
+    const panelAnalyst = document.getElementById('analyst-panel')
+
+    tabManifest.addEventListener('click', () => {
+      tabManifest.classList.add('active')
+      tabAnalyst.classList.remove('active')
+      panelManifest.style.display = 'block'
+      panelAnalyst.style.display = 'none'
+      Renderer.analysisModePath = null
+      Renderer.draw()
+    })
+    tabAnalyst.addEventListener('click', () => {
+      tabAnalyst.classList.add('active')
+      tabManifest.classList.remove('active')
+      panelAnalyst.style.display = 'block'
+      panelManifest.style.display = 'none'
+      Analyst.init()
+    })
 
     this._tickDisplay()
   },
@@ -556,10 +590,3 @@ const UI = {
   },
 }
 
-// C_MUT is a mutable shallow copy used only for runtime overrides of κ/λ/η
-// (C itself is frozen; only these three values change at runtime)
-const C_MUT = {
-  KAPPA: C.KAPPA,
-  LAMBDA: C.LAMBDA,
-  DRIVE_EFFICIENCY: C.DRIVE_EFFICIENCY,
-}

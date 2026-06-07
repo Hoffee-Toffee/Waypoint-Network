@@ -23,6 +23,14 @@ const Sim = {
   deltaSec: 1,
 
   settings: {
+    displayDistanceLY: 22,
+    kappa: C.KAPPA,
+    lambda: C.LAMBDA,
+    eta: C.DRIVE_EFFICIENCY,
+    droneMassKg: C.DRONE_MASS_KG,
+    droneBubbleRadiusM: C.DRONE_BUBBLE_RADIUS_M,
+    vesselMassKg: C.VESSEL_MASS_KG,
+    vesselBubbleRadiusM: C.VESSEL_BUBBLE_RADIUS_M,
     backgroundSignals: {
       enabled: false,
       ratePerHour: 10,

@@ -69,7 +69,7 @@ const Queue = {
   },
 
   // Spawn only the visual travelling dot (message already exists in Sim.messages)
-  spawnSignalDot(fromStation, toStation, type) {
+  spawnSignalDot(fromStation, toStation, type, speedC) {
     const fromPos = { ...fromStation.worldPos }
     const toPos = { ...toStation.worldPos }
     Sim.signals.push({
@@ -81,14 +81,14 @@ const Queue = {
       fromPos,
       toPos,
       distanceLY: Vec3.dist(fromPos, toPos),
-      speedC: C.COMM_SIGNAL_SPEED_C,
+      speedC: speedC || C.COMM_SIGNAL_SPEED_C,
       elapsedSec: 0,
       t: 0,
       currentPos: { ...fromPos },
     })
   },
 
-  dispatchSignal(fromStation, toStation, type, priority) {
+  dispatchSignal(fromStation, toStation, type, priority, speedC) {
     const id = 'msg_' + ++Queue._msgCounter
     const fromPos = { ...fromStation.worldPos }
     const toPos = { ...toStation.worldPos }
@@ -120,7 +120,7 @@ const Queue = {
       fromPos,
       toPos,
       distanceLY,
-      speedC: C.COMM_SIGNAL_SPEED_C,
+      speedC: speedC || C.COMM_SIGNAL_SPEED_C,
       elapsedSec: 0,
       t: 0,
       currentPos: { ...fromPos },

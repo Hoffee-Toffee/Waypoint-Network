@@ -130,8 +130,8 @@
           <input
             type="number"
             id="input-display-range"
-            value="20"
-            step="5"
+            value="22"
+            step="1"
             min="5"
             max="50"
             style="width: 55px"
@@ -149,7 +149,7 @@
           <input
             type="number"
             id="input-global-max-bridge"
-            value="10"
+            value="12"
             step="0.5"
             min="1"
           />
@@ -159,10 +159,10 @@
           <input
             type="number"
             id="input-global-max-connections"
-            value="5"
+            value="1000"
             step="1"
             min="1"
-            max="20"
+            max="1000"
           />
         </div>
         <div class="row">
@@ -170,7 +170,7 @@
           <input
             type="number"
             id="input-global-comm-count"
-            value="3"
+            value="8"
             step="1"
             min="1"
             max="8"
@@ -387,9 +387,15 @@
         </div>
         <!-- /inspector-panel -->
 
+        <!-- Tabs -->
+        <div id="right-tabs">
+          <button id="tab-manifest" class="active">Manifest</button>
+          <button id="tab-analyst">Analyst</button>
+        </div>
+
         <!-- Manifest -->
         <div id="manifest-panel">
-          <div class="section-header">Manifest</div>
+          <div class="section-header" style="margin-top: 0">Manifest</div>
           <table class="manifest-table">
             <thead>
               <tr>
@@ -408,6 +414,57 @@
               </tr>
             </tbody>
           </table>
+        </div>
+
+        <!-- Analyst -->
+        <div id="analyst-panel" style="display: none">
+          <div class="section-header" style="margin-top: 0">Network Analyst</div>
+
+          <div class="row">
+            <label>Source</label>
+            <select id="analyst-source"></select>
+          </div>
+          <div class="row">
+            <label>Destination</label>
+            <select id="analyst-dest"></select>
+          </div>
+          <div class="row">
+            <label>Type</label>
+            <select id="analyst-type">
+              <option value="data">Data Transfer</option>
+              <option value="drone_transit">Drone Transit</option>
+              <option value="vessel_transit">Vessel Transit</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>Priority</label>
+            <select id="analyst-priority">
+              <option value="1">P1 (Immediate)</option>
+              <option value="3" selected>P3 (Standard)</option>
+              <option value="5">P5 (Background)</option>
+            </select>
+          </div>
+
+          <button id="btn-analyst-run" style="width: 100%; margin: 10px 0; padding: 6px; background: var(--bg-input); color: var(--accent-cyan); border: 1px solid var(--border); cursor: pointer;">Analyze & Play Scenario</button>
+
+          <div id="analyst-results" style="display: none; border-top: 1px solid var(--border); padding-top: 8px;">
+            <div class="section-header">Analysis Results</div>
+            <div class="row">
+              <label>Hops</label><span class="val" id="res-hops">—</span>
+            </div>
+            <div class="row">
+              <label>Distance</label><span class="val" id="res-dist">—</span>
+            </div>
+            <div class="row">
+              <label>Avg Uptime</label><span class="val" id="res-uptime">—</span>
+            </div>
+            <div class="row">
+              <label>Coord. Delay</label><span class="val" id="res-coord">—</span>
+            </div>
+            <div class="row">
+              <label>Total Time</label><span class="val" id="res-total">—</span>
+            </div>
+          </div>
         </div>
 
         <!-- Log -->
@@ -429,6 +486,7 @@
     <script src="js/scheduler.js"></script>
     <script src="js/simulation.js"></script>
     <script src="js/renderer.js"></script>
+    <script src="js/analyst.js"></script>
     <script src="js/ui.js"></script>
     <script>
       // Boot (now synchronous — no fetch needed)
