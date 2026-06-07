@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FTL Network Simulator</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <!-- ── Top bar ─────────────────────────────────────────────────────────── -->
+    <div id="topbar">
+      <span id="lbl-sim-time">UST 2400.001 00:00:00</span>
+      <div class="topbar-sep"></div>
+
+      <label>Step</label>
+      <select id="sel-timestep">
+        <option value="1s" selected>1 s</option>
+        <option value="1min">1 min</option>
+        <option value="1hr">1 hr</option>
+        <option value="1day">1 day</option>
+      </select>
+
+      <label>Speed</label>
+      <select id="sel-speed">
+        <option value="1">1×</option>
+        <option value="10">10×</option>
+        <option value="100" selected>100×</option>
+        <option value="1000">1000×</option>
+        <option value="10000">MAX</option>
+      </select>
+
+      <div class="topbar-sep"></div>
+      <button id="btn-play">▶ Play</button>
+      <button id="btn-pause">⏸ Pause</button>
+      <button id="btn-step">⏭ Step</button>
+      <button id="btn-reset">↺ Reset</button>
+      <div class="topbar-sep"></div>
+      <button id="btn-fit">&#9654; Fit</button>
+      <button id="btn-save">⤓ Save</button>
+      <button id="btn-load">⤒ Load</button>
+      <input
+        type="file"
+        id="input-load-file"
+        accept=".json"
+        style="display: none"
+      />
+      <div class="topbar-sep"></div>
+      <label style="color: #606075; font-size: 11px">Show:</label>
+      <button id="btn-filter-both" class="active">All bridges</button>
+      <button id="btn-filter-comm">Comm active</button>
+      <button id="btn-filter-main">Main active</button>
+    </div>
+
+    <!-- ── Main layout ─────────────────────────────────────────────────────── -->
+    <div id="layout">
+      <!-- Left sidebar: global physics + background signals -->
+      <div id="sidebar-left">
+        <div class="section-header">FTL Physics</div>
+
+        <div class="row">
+          <label>κ (drive const)</label>
+          <input
+            type="number"
+            id="input-kappa"
+            value="1.0"
+            step="0.1"
+            min="0"
+          />
+        </div>
+        <div class="row">
+          <label>λ (bridge const)</label>
+          <input
+            type="number"
+            id="input-lambda"
+            value="1.0"
+            step="0.1"
+            min="0"
+          />
+        </div>
+        <div class="row row-slider">
+          <div class="slider-header">
+            <label>η drive</label>
+            <span class="val" id="lbl-eta">0.85</span>
+          </div>
+          <input
+            type="range"
+            id="input-eta"
+            min="0.5"
+            max="1.0"
+            step="0.01"
+            value="0.85"
+          />
+        </div>
+
+        <div class="section-header">Drone Defaults</div>
+        <div class="row">
+          <label>Mass (kg)</label>
+          <input type="number" id="input-drone-mass" value="50" min="1" />
+        </div>
+        <div class="row">
+          <label>Bubble r (m)</label>
+          <input
+            type="number"
+            id="input-drone-bubble"
+            value="1.5"
+            step="0.1"
+            min="0.5"
+          />
+        </div>
+
+        <div class="section-header">Vessel Defaults</div>
+        <div class="row">
+          <label>Mass (kg)</label>
+          <input type="number" id="input-vessel-mass" value="1000000" min="1" />
+        </div>
+        <div class="row">
+          <label>Bubble r (m)</label>
+          <input
+            type="number"
+            id="input-vessel-bubble"
+            value="100"
+            step="1"
+            min="10"
+          />
+        </div>
+
+        <div class="section-header">Network</div>
+        <div class="row">
+          <label>Display range (LY)</label>
+          <input
+            type="number"
+            id="input-display-range"
+            value="20"
+            step="5"
+            min="5"
+            max="50"
+            style="width: 55px"
+          />
+        </div>
+        <div
+          class="row"
+          style="color: #606075; font-size: 10px; justify-content: flex-end"
+          id="lbl-active-stars"
+        >
+          0 stars active
+        </div>
+        <div class="row">
+          <label>Max distance (LY)</label>
+          <input
+            type="number"
+            id="input-global-max-bridge"
+            value="10"
+            step="0.5"
+            min="1"
+          />
+        </div>
+        <div class="row">
+          <label>Max connections</label>
+          <input
+            type="number"
+            id="input-global-max-connections"
+            value="5"
+            step="1"
+            min="1"
+            max="20"
+          />
+        </div>
+        <div class="row">
+          <label>Comm units</label>
+          <input
+            type="number"
+            id="input-global-comm-count"
+            value="3"
+            step="1"
+            min="1"
+            max="8"
+          />
+        </div>
+        <div class="row">
+          <label>Cadence (s)</label>
+          <input
+            type="number"
+            id="input-global-cadence"
+            value="30"
+            step="5"
+            min="10"
+            max="300"
+            style="width: 55px"
+          />
+        </div>
+
+        <div class="section-header">Background Signals</div>
+        <div class="row">
+          <label>Enabled</label>
+          <input type="checkbox" id="input-bg-enable" />
+        </div>
+        <div class="row">
+          <label>Rate (msg/hr)</label>
+          <input
+            type="number"
+            id="input-bg-rate"
+            value="10"
+            min="0"
+            step="1"
+            style="width: 55px"
+          />
+        </div>
+        <div class="row">
+          <label>Distribution</label>
+          <select
+            id="input-bg-dist"
+            style="
+              width: 95px;
+              background: #12121a;
+              color: #c8c8d8;
+              border: 1px solid #2a2a3a;
+              border-radius: 3px;
+              font-size: 12px;
+            "
+          >
+            <option value="proximity" selected>Proximity</option>
+            <option value="uniform">Uniform</option>
+          </select>
+        </div>
+        <div style="color: #606075; font-size: 11px; margin: 4px 0 2px">
+          Type mix (%):
+        </div>
+        <div class="row">
+          <label>Check-in</label>
+          <input
+            type="number"
+            id="input-bg-mix-check"
+            value="50"
+            min="0"
+            max="100"
+            step="5"
+            style="width: 55px"
+          />
+        </div>
+        <div class="row">
+          <label>Data</label>
+          <input
+            type="number"
+            id="input-bg-mix-data"
+            value="30"
+            min="0"
+            max="100"
+            step="5"
+            style="width: 55px"
+          />
+        </div>
+        <div class="row">
+          <label>Drone transit</label>
+          <input
+            type="number"
+            id="input-bg-mix-drone"
+            value="15"
+            min="0"
+            max="100"
+            step="5"
+            style="width: 55px"
+          />
+        </div>
+        <div class="row">
+          <label>Vessel transit</label>
+          <input
+            type="number"
+            id="input-bg-mix-vessel"
+            value="5"
+            min="0"
+            max="100"
+            step="5"
+            style="width: 55px"
+          />
+        </div>
+      </div>
+      <!-- /sidebar-left -->
+
+      <!-- Centre: map canvas -->
+      <div id="map-area">
+        <canvas id="map-canvas"></canvas>
+      </div>
+
+      <!-- Right panel: inspector + manifest + log -->
+      <div id="panel-right">
+        <!-- Station inspector (hidden until station clicked) -->
+        <div id="inspector-panel">
+          <div id="insp-name">—</div>
+          <div id="insp-star"></div>
+
+          <div class="section-header">Orbit</div>
+          <div class="row">
+            <label>Distance (AU)</label>
+            <input
+              type="number"
+              id="insp-orbit-input"
+              step="0.001"
+              min="0.005"
+              max="1.0"
+              style="width: 70px"
+            />
+          </div>
+          <div class="row row-slider">
+            <input
+              type="range"
+              id="insp-orbit-slider"
+              min="0.005"
+              max="0.5"
+              step="0.001"
+              value="0.03"
+            />
+          </div>
+          <div class="row">
+            <label>Period</label> <span class="val" id="insp-period">—</span>
+          </div>
+          <div class="row">
+            <label>Speed</label> <span class="val" id="insp-speed">—</span>
+          </div>
+          <div class="row">
+            <label>Shadow/orbit</label
+            ><span class="val" id="insp-shadow">—</span>
+          </div>
+          <div class="row">
+            <label>Uptime</label> <span class="val" id="insp-uptime">—</span>
+          </div>
+          <div class="row">
+            <label>Solar flux</label><span class="val" id="insp-flux">—</span>
+          </div>
+
+          <div class="row">
+            <label>Inclination (°)</label>
+            <input
+              type="number"
+              id="insp-inc-input"
+              step="1"
+              min="-90"
+              max="90"
+              style="width: 55px"
+            />
+          </div>
+          <div class="row row-slider">
+            <input
+              type="range"
+              id="insp-inc-slider"
+              min="-90"
+              max="90"
+              step="1"
+              value="0"
+            />
+          </div>
+          <div class="row">
+            <label>LAN (°)</label>
+            <input
+              type="number"
+              id="insp-lan-input"
+              step="5"
+              min="0"
+              max="360"
+              style="width: 55px"
+            />
+          </div>
+
+          <div class="section-header">Station</div>
+          <div class="row">
+            <label>Max dist (LY)</label>
+            <input
+              type="number"
+              id="insp-max-bridge-input"
+              min="1"
+              max="50"
+              step="0.5"
+            />
+          </div>
+          <div class="row">
+            <label>Max connections</label>
+            <input
+              type="number"
+              id="insp-max-connections-input"
+              min="1"
+              max="20"
+              step="1"
+            />
+          </div>
+
+          <div class="section-header">Energy Reserve</div>
+          <progress id="insp-reserve-bar" value="1" max="1"></progress>
+        </div>
+        <!-- /inspector-panel -->
+
+        <!-- Manifest -->
+        <div id="manifest-panel">
+          <div class="section-header">Manifest</div>
+          <table class="manifest-table">
+            <thead>
+              <tr>
+                <th>P</th>
+                <th>Type</th>
+                <th>Route</th>
+                <th>Status</th>
+                <th>Path</th>
+              </tr>
+            </thead>
+            <tbody id="manifest-tbody">
+              <tr>
+                <td colspan="5" style="color: #444; padding: 8px 4px">
+                  No items
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Log -->
+        <div id="log-panel">
+          <div class="section-header" style="margin-top: 0">Log</div>
+          <div id="log-entries"></div>
+        </div>
+      </div>
+      <!-- /panel-right -->
+    </div>
+    <!-- /layout -->
+
+    <!-- Scripts: load in dependency order -->
+    <script src="js/constants.js"></script>
+    <script src="js/vec3.js"></script>
+    <script src="js/physics.js"></script>
+    <script src="js/stars.js"></script>
+    <script src="js/queue.js"></script>
+    <script src="js/scheduler.js"></script>
+    <script src="js/simulation.js"></script>
+    <script src="js/renderer.js"></script>
+    <script src="js/ui.js"></script>
+    <script>
+      // Boot (now synchronous — no fetch needed)
+      initSimulation()
+      console.log('FTL Network Simulator initialised.')
+    </script>
+  </body>
+</html>

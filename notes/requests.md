@@ -1,0 +1,27 @@
+For scheduling, the messages may need some form of coordination, something to keep the conversation short.
+Could be as simple as just a send and respond, so station A will send out the details on the request (priority, type) along with any details on times it can transmit (stations already know LOS periods, this is just around orientation if others are booked, especially for use of the main conduit, as there is only one).
+Response from station B will be of the slot it is booking (if it is).
+Will not always pick the first available slot, as time will always be reserved for the highest priority messages, since bridges must be coordinated.
+Keeping multi-bridge requests short could be trickier, especially if one is to contact all neighbours for slots and needs to confirm only one with as little contact as possible.
+Could be that it sends out messages to all neighbours, and must wait for a reply from each before it then sends a confirmation signal, but this is only for a 1 bridge connection.
+The destination could be even further away, maybe requiring as many going though 5 stations, in this case it could 'book' and execute some earlier jumps before even the end of the journey is booked.
+Chances are that the queues are pretty low for most places except Sol, so this could be less of an issue, especially since slots are reserved for high priorities as well, then it is mostly the LOS periods that need to be considered for these jumps, and each station should know this in advance.
+This means we can probably streamline this by possibly trying to organise a few routes (depending on the priority) where we first try what we think is the quickest / earliest slot for all along the route (but we don't know for sure if it is booked).
+We send these requests with a code 'M' for example, and some backup / alternative routes with code 'S', or maybe an ordinal code would be best.
+Anyway, we use the direct protocol (request & confirmation of slot) for all M's, using only 2 requests.
+But we also send out the secondary requests, which require three parts (request, next slot, confirmation from origin).
+This means it does not need to send a followup if it goes ahead with the main route, and it can pivot if the original route request was not good enough.
+But again, I think I am overcomplicating this protocol, as long as it is quick (since stations need to coordinate).
+I don't even know if it is worth allowing A -> B -> C messages to plan future A -> C transits if currently in an LOS period, if it is important, then jumps are likely the best case, but it could find that waiting for the LOS period to end is best, and may have already planned in advance via another station so it does not have to coordinate once the LOS window has ended.
+Interested on your thoughts, some kind of breakdown of what information actually needs conveying to make these plans, since all stations should know LOS windows in advance with high certainty, even LOS updates with local phenomina should be notified in advance, any any emergency vessels / transits that do not have notice will have to work around this to avoid causing an LOS that some stations would not have had time to be notified of yet.
+Can you also change these defaults,
+Display range: 22
+Max Distance: 12
+Max Connections: 1000 (means it can try to connect to any within 12ly)
+Comm units: 8 (change the logic since this should always be even, allowing for an incoming and outgoing channel to always be used simutaneously, since they should always open/close at the same time anyway, so 8 will actually mean 16 comms units, but only 8 channels, which is what really matters, since the incoming / outgoing units must turn together and the angular differences / LOS differences are minimal, since we calculate of the center of the station anyway, this is good enough).
+
+Can you also add a simple tool allowing me to get some stats on some comms / travel time between selected nodes (for a given transfer type)?
+This should include a bunch of stats, including the average uptime percentage, average comms times (as may have to wait for next window / actual channel open to send request) account for message travel time and response, then time until the next transfer (we can guess from the priority, assume almost instant at highest priority, though another transfer could be in progress, give me the ability to change some of these values, maybe we have a dropdown of presets and a custom option).
+Relays will be a bit more complicated, but we will assume it will always try to get closest to the destination, one relay at a time, but will comm ahead, so A -> B -> C -> D, comms will flow all the way through, with each pair setting up it's own transfer in sequence, since each must know the arrival time of the previous trip.
+However, After A -> B was organised, the B -> C trip will be being organised, and maybe once the A -> B trip is done, the rest has finished being organised, but again this all depends on the comm cycles and times as to how long the entire process takes.
+This could be a seperate tab / mode, as I want to only see the stations / graph for those used, and have an option to play out a version of the scenario for me to visually see the process unfold.

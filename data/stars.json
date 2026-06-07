@@ -1,0 +1,112 @@
+[
+  {
+    "id": "sol",
+    "name": "Sol",
+    "x": 0.0,
+    "y": 0.0,
+    "z": 0.0,
+    "radiusM": 6.957e8,
+    "massKg": 1.989e30,
+    "spectralType": "G2V",
+    "luminositySol": 1.0
+  },
+  {
+    "id": "proxima",
+    "name": "Proxima Centauri",
+    "x": -1.295,
+    "y": -3.972,
+    "z": -0.088,
+    "radiusM": 1.0708e8,
+    "massKg": 2.446e29,
+    "spectralType": "M5.5Ve",
+    "luminositySol": 0.00155
+  },
+  {
+    "id": "alpha_cen_a",
+    "name": "Alpha Centauri A",
+    "x": -1.634,
+    "y": -3.907,
+    "z": -0.026,
+    "radiusM": 8.511e8,
+    "massKg": 2.188e30,
+    "spectralType": "G2V",
+    "luminositySol": 1.519
+  },
+  {
+    "id": "alpha_cen_b",
+    "name": "Alpha Centauri B",
+    "x": -1.634,
+    "y": -3.907,
+    "z": -0.026,
+    "radiusM": 6.017e8,
+    "massKg": 1.804e30,
+    "spectralType": "K1V",
+    "luminositySol": 0.500
+  },
+  {
+    "id": "barnard",
+    "name": "Barnard's Star",
+    "x": -0.056,
+    "y": -5.978,
+    "z": -0.672,
+    "radiusM": 2.235e8,
+    "massKg": 2.864e29,
+    "spectralType": "M4Ve",
+    "luminositySol": 0.00350
+  },
+  {
+    "id": "wolf359",
+    "name": "Wolf 359",
+    "x": -7.342,
+    "y": -2.188,
+    "z": 1.032,
+    "radiusM": 1.567e8,
+    "massKg": 1.788e29,
+    "spectralType": "M6Ve",
+    "luminositySol": 0.00102
+  },
+  {
+    "id": "lalande",
+    "name": "Lalande 21185",
+    "x": -6.503,
+    "y": -5.136,
+    "z": 1.834,
+    "radiusM": 2.791e8,
+    "massKg": 7.133e29,
+    "spectralType": "M2V",
+    "luminositySol": 0.02100
+  },
+  {
+    "id": "sirius",
+    "name": "Sirius A",
+    "x": -5.493,
+    "y": -6.575,
+    "z": -0.843,
+    "radiusM": 1.234e9,
+    "massKg": 4.018e30,
+    "spectralType": "A1V",
+    "luminositySol": 25.4
+  },
+  {
+    "id": "epsilon_eri",
+    "name": "Epsilon Eridani",
+    "x": 6.453,
+    "y": -8.364,
+    "z": -0.827,
+    "radiusM": 6.190e8,
+    "massKg": 1.470e30,
+    "spectralType": "K2V",
+    "luminositySol": 0.320
+  },
+  {
+    "id": "tau_ceti",
+    "name": "Tau Ceti",
+    "x": 5.699,
+    "y": -10.320,
+    "z": -1.244,
+    "radiusM": 6.794e8,
+    "massKg": 1.585e30,
+    "spectralType": "G8V",
+    "luminositySol": 0.522
+  }
+]
