@@ -331,7 +331,6 @@ const Scheduler = {
 
       msg.status = 'scheduled'
       msg.scheduledDeparture = startSec
-      const speedC = this._getMsgSpeed(msg, station)
       msg.estimatedArrival =
         endSec + (bridge.lengthLY / speedC) * C.YEAR_IN_SECONDS
 

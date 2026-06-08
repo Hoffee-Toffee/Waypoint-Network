@@ -6,7 +6,11 @@ const Analyst = {
   activePath: null, // [stationId, ...]
 
   init() {
-    this._populateSelectors()
+    // Only populate if not already done, to preserve user selection
+    if (document.getElementById('analyst-source').options.length === 0) {
+      this._populateSelectors()
+    }
+
     // Remove existing listener to avoid duplication if init is called multiple times
     const btn = document.getElementById('btn-analyst-run')
     const newBtn = btn.cloneNode(true)
