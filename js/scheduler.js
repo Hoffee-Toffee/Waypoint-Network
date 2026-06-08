@@ -175,8 +175,8 @@ const Scheduler = {
           if (w.startSec > now) continue
           const msg = Sim.messageMap[w.messageId]
           if (!msg) continue
-          const fromSt = Sim.stations[msg.sourceId]
-          const toSt = Sim.stations[msg.destinationId]
+          const fromSt = Sim.stations[stId]
+          const toSt = Sim.stations[w.targetId]
           const speedC = this._getMsgSpeed(msg, fromSt)
           if (fromSt && toSt) Queue.spawnSignalDot(fromSt, toSt, msg.type, speedC)
           if (msg.status === 'scheduled') msg.status = 'in_transit'
@@ -196,7 +196,7 @@ const Scheduler = {
     }
   },
 
-  enqueue(fromId, toId, type, priority) {
+  enqueue(fromId, toId, type, priority, analystPath = null) {
     const station = Sim.stations[fromId]
     if (!station) return
     const id = 'msg_' + ++Queue._msgCounter
@@ -207,6 +207,7 @@ const Scheduler = {
       sourceId: fromId,
       destinationId: toId,
       path: null, // resolved by scheduler
+      analystPath, // stable copy for UI tracking
       status: 'queued',
       conduitType: type === 'vessel_transit' ? 'main' : 'comm',
       createdAt: Sim.simTimeSec,
@@ -263,6 +264,10 @@ const Scheduler = {
       // Use the per-tick cached value to avoid repeated orbital scans.
       const nextStation = Sim.stations[nextHopId]
       const windowSec = this._estimateWindowSec(msg)
+      const speedC = this._getMsgSpeed(msg, station)
+      const travelSec = (bridge.lengthLY / speedC) * C.YEAR_IN_SECONDS
+      const totalWindowNeeded = windowSec + travelSec
+
       const pair = this._findChannelPair(station, nextStation, now, msg)
       if (!pair) continue
 
@@ -281,7 +286,7 @@ const Scheduler = {
           )
 
       const losRemaining = this._losCache?.[bridge.id] ?? 0
-      if (losRemaining < windowSec + slewSec) {
+      if (losRemaining < totalWindowNeeded + slewSec) {
         msg.status = 'awaiting_alignment'
         continue
       }
@@ -289,12 +294,12 @@ const Scheduler = {
       let startSec, endSec
       if (isAlreadyAimed) {
         // Piggyback: extend the existing session, no slew cost
-        startSec = now
-        endSec = csA.sessionEndSec + windowSec
+        startSec = csA.sessionEndSec
+        endSec = startSec + totalWindowNeeded
       } else {
         // New target: starts after slew from current pointing
         startSec = Math.max(now, csA.sessionEndSec, csB.sessionEndSec) + slewSec
-        endSec = startSec + windowSec
+        endSec = startSec + totalWindowNeeded
       }
 
       // Update both conduit states
@@ -570,13 +575,10 @@ const Scheduler = {
             if (toSt) toSt.lastCheckinByNeighbour[msg.sourceId] = now
           }
           if (msg.path && msg.path.length > 2) {
-            Scheduler.enqueue(
-              msg.path[1],
-              msg.destinationId,
-              msg.type,
-              msg.priority,
-            )
-            msg.status = 'relaying'
+            // Relay: shift path and put back in queue at the current station (sB)
+            msg.path.shift()
+            msg.status = 'queued'
+            sB.outboundQueue.add(msg.id)
           }
         }
       }

@@ -154,7 +154,7 @@ const Physics = {
     const n = C.SPEED_EXPONENT
 
     const inner = (P * eta) / (kappa * massKg * bubbleRadiusM ** 2)
-    if (inner <= 0) return 100 // minimum safe speed
+    if (inner <= 0) return 0.1 // minimum safe speed (0.1c)
     return Math.pow(inner, 1 / n)
   },
 

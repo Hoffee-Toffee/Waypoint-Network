@@ -7,7 +7,11 @@ const Analyst = {
 
   init() {
     this._populateSelectors()
-    document.getElementById('btn-analyst-run').addEventListener('click', () => this.runAnalysis())
+    // Remove existing listener to avoid duplication if init is called multiple times
+    const btn = document.getElementById('btn-analyst-run')
+    const newBtn = btn.cloneNode(true)
+    btn.parentNode.replaceChild(newBtn, btn)
+    newBtn.addEventListener('click', () => this.runAnalysis())
   },
 
   _populateSelectors() {
@@ -76,7 +80,8 @@ const Analyst = {
     // - Slew costs (~10s per hop)
     // - High priority reduces wait
     const baseCadence = Sim.stations[path[0]].baseCadenceSeconds
-    const coordDelay = (path.length - 1) * (baseCadence / priority + 10)
+    const priorityWeight = { 1: 0.1, 2: 0.3, 3: 0.5, 4: 0.8, 5: 1.0 }[priority] || 0.5
+    const coordDelay = (path.length - 1) * (baseCadence * priorityWeight + 10)
 
     // Travel time
     const sampleMsg = { type }
@@ -93,7 +98,10 @@ const Analyst = {
 
     // 2. Play Scenario
     UI.appendLog('info', `Scenario: ${type} ${fromId} → ${toId}`)
-    Scheduler.enqueue(fromId, toId, type, priority)
+    Scheduler.enqueue(fromId, toId, type, priority, path)
+
+    // Ensure simulation is running
+    if (Sim.paused) UI.play()
 
     Renderer.draw()
   },

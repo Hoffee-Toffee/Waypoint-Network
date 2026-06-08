@@ -164,14 +164,15 @@ const Renderer = {
     const ctx = this.ctx
     const seen = new Set()
     for (const msg of Sim.messages) {
-      if (!msg.path || msg.path.length < 2) continue
+      const path = msg.analystPath || msg.path
+      if (!path || path.length < 2) continue
       if (msg.status === 'delivered' || msg.status === 'failed') continue
 
       if (this.analysisModePath) {
         // In analysis mode, only show the path if it matches the active path
         const matches =
-          msg.path.length === this.analysisModePath.length &&
-          msg.path.every((v, i) => v === this.analysisModePath[i])
+          path.length === this.analysisModePath.length &&
+          path.every((v, i) => v === this.analysisModePath[i])
         if (!matches) continue
       }
 
@@ -182,12 +183,12 @@ const Renderer = {
         ? 'rgba(100,160,255,0.95)'
         : C.COL_PATH_PLANNED
       ctx.lineWidth = isHighlighted ? 2 : 1
-      for (let i = 0; i < msg.path.length - 1; i++) {
+      for (let i = 0; i < path.length - 1; i++) {
         const key = msg.id + ':' + i // per-message segment key so overlapping paths both show
         if (seen.has(key)) continue
         seen.add(key)
-        const sA = Sim.stations[msg.path[i]]
-        const sB = Sim.stations[msg.path[i + 1]]
+        const sA = Sim.stations[path[i]]
+        const sB = Sim.stations[path[i + 1]]
         if (!sA || !sB) continue
         const pA = this._stationScreenPos(sA)
         const pB = this._stationScreenPos(sB)
