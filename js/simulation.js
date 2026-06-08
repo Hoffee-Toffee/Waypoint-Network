@@ -150,7 +150,8 @@ function makeStation(star) {
 
     // Comms
     baseCadenceSeconds: C.DEFAULT_BASE_CADENCE_S,
-    lastCheckinByNeighbour: {}, // { stationId: simTimeSec }
+    lastCheckinByNeighbour: {}, // { stationId: simTimeSec } (arrivals)
+    lastHeartbeatSent: {}, // { stationId: simTimeSec } (dispatches)
 
     // Network
     maxBridgeDistanceLY: C.DEFAULT_MAX_BRIDGE_LY,
@@ -506,11 +507,6 @@ function tickUpdateLOS() {
     } else if (los && bridge.status === 'occluded') {
       bridge.status = 'inactive'
     }
-    // GAP 2: when LOS is restored, reset check-in timers so both stations
-    // immediately attempt a reconnect rather than waiting for the cadence.
-    if (!prevLos && los) {
-      if (sA) sA.lastCheckinByNeighbour[bridge.stationBId] = -Infinity
-      if (sB) sB.lastCheckinByNeighbour[bridge.stationAId] = -Infinity
-    }
+    // GAP 2: removed -Infinity reset to avoid traffic bursts when LOS returns
   }
 }

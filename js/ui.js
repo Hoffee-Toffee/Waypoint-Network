@@ -253,6 +253,7 @@ const UI = {
     for (const s of Object.values(Sim.stations)) {
       s.phaseRad = Math.random() * 2 * Math.PI
       s.lastCheckinByNeighbour = {}
+      s.lastHeartbeatSent = {}
       s.outboundQueue = new Set()
       s.pendingCheckinDests = new Set()
       s.inboundQueue = []

@@ -146,17 +146,10 @@ const Scheduler = {
         this._windows[stId][key] = this._windows[stId][key].filter(
           (w) => w.endSec > now || (w._visuallyDispatched && !w._delivered),
         )
-        // Update sessionEndSec: max endSec of remaining windows, or now if empty
+        // Update sessionEndSec: max busy duration of remaining windows
         const wins = this._windows[stId][key]
-        if (wins.length === 0) {
-          // Session has ended; conduit remains pointed at last target until slewed
-          this._conduitState[stId][key].sessionEndSec = now
-        } else {
-          this._conduitState[stId][key].sessionEndSec = wins.reduce(
-            (m, w) => Math.max(m, w.endSec),
-            0,
-          )
-        }
+        const busyUntil = wins.length === 0 ? now : wins.reduce((m, w) => Math.max(m, w.startSec + (w.windowSec || 0)), 0)
+        this._conduitState[stId][key].sessionEndSec = Math.max(now, busyUntil)
       }
     }
 
@@ -177,6 +170,12 @@ const Scheduler = {
           if (!msg) continue
           const fromSt = Sim.stations[stId]
           const toSt = Sim.stations[w.targetId]
+
+          // Fix: Clear pending flag on dispatch to allow scheduling next interval
+          if (msg.type === 'base_check' && fromSt) {
+            fromSt.pendingCheckinDests.delete(w.targetId)
+          }
+
           const speedC = this._getMsgSpeed(msg, fromSt)
           if (fromSt && toSt) Queue.spawnSignalDot(fromSt, toSt, msg.type, speedC)
           if (msg.status === 'scheduled') msg.status = 'in_transit'
@@ -303,26 +302,30 @@ const Scheduler = {
       }
 
       // Update both conduit states
+      // CONGESTION FIX: conduits are freed at startSec + windowSec (pulse duration)
+      // rather than waiting for the physical travel time (endSec).
       csA.currentTargetId = nextHopId
-      csA.sessionEndSec = endSec
+      csA.sessionEndSec = startSec + windowSec
       csB.currentTargetId = station.id
-      csB.sessionEndSec = endSec
+      csB.sessionEndSec = startSec + windowSec
 
       // Add window to sender
       this._windows[station.id][sourceKey].push({
         targetId: nextHopId,
         startSec,
         endSec,
+        windowSec,
         messageId: msgId,
         _visuallyDispatched: false,
         _delivered: false,
       })
 
-      // Add window to receiver (mark as receiver to avoid double processing)
+      // Add window to receiver (offset by travel time)
       this._windows[nextStation.id][targetKey].push({
         targetId: station.id,
-        startSec,
-        endSec,
+        startSec: startSec + travelSec,
+        endSec: endSec,
+        windowSec,
         messageId: msgId,
         isReceiver: true,
         _visuallyDispatched: true,
@@ -385,14 +388,21 @@ const Scheduler = {
       const bAimed = csB.currentTargetId === stationA.id && csB.sessionEndSec > now
 
       if (aAimed && bAimed) return { sourceKey: 'main', targetKey: 'main' }
-      if (csA.sessionEndSec <= now && csB.sessionEndSec <= now)
-        return { sourceKey: 'main', targetKey: 'main' }
+
+      // Phase 2: idle alignment for main conduit
+      // RESTRICTION: Only heartbeats can trigger a new alignment on an idle
+      // conduit. Drones and Vessels must wait for a coordination window
+      // opened by a heartbeat.
+      if (msg.type === 'base_check') {
+        if (csA.sessionEndSec <= now && csB.sessionEndSec <= now)
+          return { sourceKey: 'main', targetKey: 'main' }
+      }
       return null
     } else {
       const keysA = this._commConduitKeys(stationA)
       const keysB = this._commConduitKeys(stationB)
 
-      // Phase 1: channels already pointing at each other
+      // Phase 1: channels already pointing at each other and ACTIVE
       for (const kA of keysA) {
         const csA = this._conduitState[stationA.id][kA]
         if (csA.currentTargetId === stationB.id && csA.sessionEndSec > now) {
@@ -406,13 +416,18 @@ const Scheduler = {
       }
 
       // Phase 2: find two idle channels
-      for (const kA of keysA) {
-        const csA = this._conduitState[stationA.id][kA]
-        if (csA.sessionEndSec <= now) {
-          for (const kB of keysB) {
-            const csB = this._conduitState[stationB.id][kB]
-            if (csB.sessionEndSec <= now) {
-              return { sourceKey: kA, targetKey: kB }
+      // RESTRICTION: Only periodic heartbeats (base_check) can trigger a
+      // new alignment on an idle conduit. All other traffic (data, probes, transits)
+      // must wait for an open bridge window established by these heartbeats.
+      if (msg.type === 'base_check') {
+        for (const kA of keysA) {
+          const csA = this._conduitState[stationA.id][kA]
+          if (csA.sessionEndSec <= now) {
+            for (const kB of keysB) {
+              const csB = this._conduitState[stationB.id][kB]
+              if (csB.sessionEndSec <= now) {
+                return { sourceKey: kA, targetKey: kB }
+              }
             }
           }
         }
@@ -570,6 +585,10 @@ const Scheduler = {
             `Delivered [${msg.type}] P${msg.priority}: ${fromName}→${toName}`,
           )
           if (msg.type === 'base_check') {
+            // Fix: Clear pending flag on delivery so next heartbeat can be scheduled
+            const fromSt = Sim.stations[msg.sourceId]
+            if (fromSt) fromSt.pendingCheckinDests.delete(msg.destinationId)
+
             const toSt = Sim.stations[msg.destinationId]
             if (toSt) toSt.lastCheckinByNeighbour[msg.sourceId] = now
           }
@@ -578,7 +597,48 @@ const Scheduler = {
             msg.path.shift()
             msg.status = 'queued'
             sB.outboundQueue.add(msg.id)
+          } else {
+            // Reached final destination
+            this._onMessageReachedFinalDestination(msg, sB)
           }
+        }
+      }
+    }
+  },
+
+  _onMessageReachedFinalDestination(msg, station) {
+    if (msg.type === 'multi_hop_coordination') {
+      // Find where we are in the original analyst path
+      const ap = msg.analystPath
+      if (!ap) return
+
+      const isReverse = ap[0] === Analyst._pendingScenario?.toId
+      const isForward = ap[0] === Analyst._pendingScenario?.fromId
+
+      if (isForward) {
+        // Coordination probe reached target, now send turnaround back to source
+        const turnaroundPath = [...ap].reverse()
+        UI.appendLog('info', `Coordination probe reached ${station.name}. Returning ACK.`)
+        this.enqueue(
+          turnaroundPath[0],
+          turnaroundPath[turnaroundPath.length-1],
+          'multi_hop_coordination',
+          1,
+          turnaroundPath
+        )
+      } else if (isReverse) {
+        // Coordination ACK reached source, now inject the actual payload
+        const scenario = Analyst._pendingScenario
+        if (scenario && scenario.fromId === station.id) {
+          UI.appendLog('event', `Coordination complete. Injecting payload: ${scenario.type}`)
+          this.enqueue(
+            scenario.fromId,
+            scenario.toId,
+            scenario.type,
+            scenario.priority,
+            scenario.path
+          )
+          Analyst._pendingScenario = null
         }
       }
     }

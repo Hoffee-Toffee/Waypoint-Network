@@ -13,11 +13,6 @@ const Queue = {
     //    optional test traffic.  The background signal flag only controls
     //    the random BgGen traffic generated below.
     {
-      const { ratePerHour, typeMix } = Sim.settings.backgroundSignals
-      const checkInFraction = Math.max(0.01, typeMix.base_check ?? 0.5)
-      const rateBasedCadence =
-        ratePerHour > 0 ? 3600 / (ratePerHour * checkInFraction) : Infinity
-
       const stationIds = Object.keys(Sim.stations)
       for (const sid of stationIds) {
         const station = Sim.stations[sid]
@@ -29,20 +24,23 @@ const Queue = {
           if (!bridge || !bridge.los) continue
 
           const neighbour = Sim.stations[nid]
-          const stationCadence = Math.min(
-            station.baseCadenceSeconds,
-            neighbour.baseCadenceSeconds,
-          )
-          const effectiveCadence = Math.max(rateBasedCadence, stationCadence)
 
-          const lastCheckin = station.lastCheckinByNeighbour[nid] ?? -Infinity
-          if (Sim.simTimeSec - lastCheckin < effectiveCadence) continue
+          // STAGGER FIX: Use a stable hash of the pair's IDs to jitter the first check-in
+          const pairId = sid < nid ? sid + nid : nid + sid
+          let hash = 0
+          for (let i = 0; i < pairId.length; i++) hash = (hash << 5) - hash + pairId.charCodeAt(i)
+          const jitter = Math.abs(hash % 60) // 0-60s jitter
+
+          const effectiveCadence = Math.min(station.baseCadenceSeconds, neighbour.baseCadenceSeconds)
+
+          const lastSent = station.lastHeartbeatSent?.[nid] ?? (jitter - effectiveCadence)
+          if (Sim.simTimeSec - lastSent < effectiveCadence) continue
 
           if (station.pendingCheckinDests?.has(nid)) continue
 
           Scheduler.enqueue(sid, nid, 'base_check', 3)
-          station.pendingCheckinDests?.add(nid)
-          station.lastCheckinByNeighbour[nid] = Sim.simTimeSec
+          if (station.pendingCheckinDests) station.pendingCheckinDests.add(nid)
+          if (station.lastHeartbeatSent) station.lastHeartbeatSent[nid] = Sim.simTimeSec
         }
       }
     }

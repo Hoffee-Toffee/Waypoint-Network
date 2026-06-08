@@ -4,18 +4,14 @@
 
 const Analyst = {
   activePath: null, // [stationId, ...]
+  _pendingScenario: null,
+  _initialized: false,
 
   init() {
-    // Only populate if not already done, to preserve user selection
-    if (document.getElementById('analyst-source').options.length === 0) {
-      this._populateSelectors()
-    }
-
-    // Remove existing listener to avoid duplication if init is called multiple times
-    const btn = document.getElementById('btn-analyst-run')
-    const newBtn = btn.cloneNode(true)
-    btn.parentNode.replaceChild(newBtn, btn)
-    newBtn.addEventListener('click', () => this.runAnalysis())
+    if (this._initialized) return
+    this._populateSelectors()
+    document.getElementById('btn-analyst-run').addEventListener('click', () => this.runAnalysis())
+    this._initialized = true
   },
 
   _populateSelectors() {
@@ -100,13 +96,18 @@ const Analyst = {
     document.getElementById('res-coord').textContent = this._formatTime(coordDelay)
     document.getElementById('res-total').textContent = this._formatTime(totalTime)
 
-    // 2. Play Scenario
-    UI.appendLog('info', `Scenario: ${type} ${fromId} → ${toId}`)
-    Scheduler.enqueue(fromId, toId, type, priority, path)
+    // 2. Play Scenario: Initiate Coordination Handshake
+    UI.appendLog('info', `Initiating coordination for: ${type} ${fromId} → ${toId}`)
+
+    this._pendingScenario = { fromId, toId, type, priority, path }
+
+    // Send coordination probe first
+    Scheduler.enqueue(fromId, toId, 'multi_hop_coordination', 1, path)
 
     // Ensure simulation is running
     if (Sim.paused) UI.play()
 
+    UI.refreshManifest()
     Renderer.draw()
   },
 
