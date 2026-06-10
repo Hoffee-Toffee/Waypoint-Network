@@ -415,4 +415,14 @@ const Physics = {
       halfWidthRad: halfWidthDeg * C.DEG_TO_RAD,
     }
   },
+
+  /**
+   * Returns the maximum possible continuous LOS window duration (seconds)
+   * between two stations, given their orbital parameters.
+   */
+  maxContinuousWindow(sA, sB) {
+    const durA = (1 - sA.shadowArcDeg / 360) * sA.orbitalPeriodHours * 3600
+    const durB = (1 - sB.shadowArcDeg / 360) * sB.orbitalPeriodHours * 3600
+    return Math.min(durA, durB)
+  },
 }

@@ -33,14 +33,14 @@ const Queue = {
 
           const effectiveCadence = Math.min(station.baseCadenceSeconds, neighbour.baseCadenceSeconds)
 
-          const lastSent = station.lastHeartbeatSent?.[nid] ?? (jitter - effectiveCadence)
+          const lastSent = station.lastHeartbeatSent[nid] ?? (jitter - effectiveCadence)
           if (Sim.simTimeSec - lastSent < effectiveCadence) continue
 
-          if (station.pendingCheckinDests?.has(nid)) continue
+          if (station.pendingCheckinDests.has(nid)) continue
 
           Scheduler.enqueue(sid, nid, 'base_check', 3)
-          if (station.pendingCheckinDests) station.pendingCheckinDests.add(nid)
-          if (station.lastHeartbeatSent) station.lastHeartbeatSent[nid] = Sim.simTimeSec
+          station.pendingCheckinDests.add(nid)
+          station.lastHeartbeatSent[nid] = Sim.simTimeSec
         }
       }
     }
@@ -48,17 +48,32 @@ const Queue = {
     // 2. Advance in-flight visual signals
     for (let i = Sim.signals.length - 1; i >= 0; i--) {
       const sig = Sim.signals[i]
-      // Travel time in sim-seconds: distance(LY) / speed(c) * seconds_per_year
-      const travelTimeSec = (sig.distanceLY / sig.speedC) * C.YEAR_IN_SECONDS
+
+      // REAL-TIME DISTANCE TRACKING: endpoints move during transit
+      const sA = Sim.stations[sig.fromId]
+      const sB = Sim.stations[sig.toId]
+      if (!sA || !sB) {
+        Sim.signals.splice(i, 1)
+        continue
+      }
+
+      const currentDistLY = Vec3.dist(sA.worldPos, sB.worldPos)
+      const travelTimeSec = (currentDistLY / sig.speedC) * C.YEAR_IN_SECONDS
+
       sig.elapsedSec += deltaSec
-      const t =
-        travelTimeSec > 0 ? Math.min(1, sig.elapsedSec / travelTimeSec) : 1
+      const t = travelTimeSec > 0 ? Math.min(1, sig.elapsedSec / travelTimeSec) : 1
       sig.t = t
+
+      // Update visual position based on CURRENT endpoint positions
+      sig.fromPos = { ...sA.worldPos }
+      sig.toPos = { ...sB.worldPos }
+
       sig.currentPos = {
         x: sig.fromPos.x + (sig.toPos.x - sig.fromPos.x) * t,
         y: sig.fromPos.y + (sig.toPos.y - sig.fromPos.y) * t,
         z: sig.fromPos.z + (sig.toPos.z - sig.fromPos.z) * t,
       }
+
       if (t >= 1) {
         Queue.onSignalArrived(sig)
         Sim.signals.splice(i, 1)

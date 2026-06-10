@@ -92,16 +92,16 @@ const Scheduler = {
     this._windows = {}
     this._conduitState = {}
     for (const id of Object.keys(Sim.stations)) {
+      const st = Sim.stations[id]
       this._windows[id] = { main: [] }
       this._conduitState[id] = {
         main: { currentTargetId: null, sessionEndSec: 0 },
       }
-      const n = Sim.stations[id].commConduits.length
-      for (let i = 0; i < 8; i++) {
+      for (let i = 0; i < st.commConduits.length; i++) {
         const key = 'comm' + i
         this._windows[id][key] = []
         this._conduitState[id][key] = {
-          currentTargetId: null,
+          currentTargetId: st.commConduits[i].targetId,
           sessionEndSec: 0,
         }
       }
@@ -253,18 +253,18 @@ const Scheduler = {
       const bridge = getBridgeForPair(station.id, nextHopId)
       if (!bridge || !bridge.los) {
         // LOS unavailable — clear cached path so we re-route on next attempt
-        // (a different path may be available when LOS is restored)
         msg.path = null
         msg.status = 'awaiting_alignment'
         continue
       }
 
-      // Only schedule if LOS will last long enough for the full transmission.
-      // Use the per-tick cached value to avoid repeated orbital scans.
       const nextStation = Sim.stations[nextHopId]
       const windowSec = this._estimateWindowSec(msg)
       const speedC = this._getMsgSpeed(msg, station)
-      const travelSec = (bridge.lengthLY / speedC) * C.YEAR_IN_SECONDS
+
+      // Calculate travel time based on CURRENT distance
+      const currentDistLY = Vec3.dist(station.worldPos, nextStation.worldPos)
+      const travelSec = (currentDistLY / speedC) * C.YEAR_IN_SECONDS
       const totalWindowNeeded = windowSec + travelSec
 
       const pair = this._findChannelPair(station, nextStation, now, msg)
@@ -274,8 +274,14 @@ const Scheduler = {
       const csA = this._conduitState[station.id][sourceKey]
       const csB = this._conduitState[nextStation.id][targetKey]
 
-      const isAlreadyAimed =
-        csA.currentTargetId === nextHopId && csA.sessionEndSec > now
+      // NEW PROTOCOL: Non-heartbeat messages MUST piggyback on an existing session.
+      // This forces them to wait for the periodic link established by heartbeats.
+      const isAlreadyAimed = csA.currentTargetId === nextHopId && csA.sessionEndSec > now
+
+      if (!isAlreadyAimed && msg.type !== 'base_check') {
+        // Wait for next heartbeat to open the window
+        continue
+      }
 
       const slewSec = isAlreadyAimed
         ? 0
@@ -290,24 +296,18 @@ const Scheduler = {
         continue
       }
 
-      let startSec, endSec
-      if (isAlreadyAimed) {
-        // Piggyback: extend the existing session, no slew cost
-        startSec = csA.sessionEndSec
-        endSec = startSec + totalWindowNeeded
-      } else {
-        // New target: starts after slew from current pointing
-        startSec = Math.max(now, csA.sessionEndSec, csB.sessionEndSec) + slewSec
-        endSec = startSec + totalWindowNeeded
-      }
+      // Calculate start time: avoid overlap at both ends.
+      // Sender must be free: csA.sessionEndSec
+      // Receiver must be free WHEN PULSE ARRIVES: csB.sessionEndSec - travelSec
+      const startSec = Math.max(now, csA.sessionEndSec, csB.sessionEndSec - travelSec) + slewSec
+      const endSec = startSec + totalWindowNeeded
 
       // Update both conduit states
-      // CONGESTION FIX: conduits are freed at startSec + windowSec (pulse duration)
-      // rather than waiting for the physical travel time (endSec).
+      // Free them after the pulse duration (windowSec)
       csA.currentTargetId = nextHopId
       csA.sessionEndSec = startSec + windowSec
       csB.currentTargetId = station.id
-      csB.sessionEndSec = startSec + windowSec
+      csB.sessionEndSec = startSec + travelSec + windowSec
 
       // Add window to sender
       this._windows[station.id][sourceKey].push({
@@ -334,8 +334,7 @@ const Scheduler = {
 
       msg.status = 'scheduled'
       msg.scheduledDeparture = startSec
-      msg.estimatedArrival =
-        endSec + (bridge.lengthLY / speedC) * C.YEAR_IN_SECONDS
+      msg.estimatedArrival = endSec
 
       // Remove from outbound queue — now tracked by window
       station.outboundQueue.delete(msgId)
@@ -368,13 +367,12 @@ const Scheduler = {
   },
 
   // Find a free channel (conduit) pair between source and target.
-  // Bidirectional coordination: both stations must have a conduit available
-  // (either already pointing at each other or idle) to open a channel.
+  // NEW MODEL: Each neighbor has a dedicated pair.
   _findChannelPair(stationA, stationB, now, msg) {
-    const useMain =
-      msg.type === 'vessel_transit' || msg.type === 'drone_transit'
+    const useMain = msg.type === 'vessel_transit' || msg.type === 'drone_transit'
 
     if (useMain) {
+      // Main conduit logic remains shared for now (limited docks)
       const starA = Sim.stars[stationA.starId]
       const starB = Sim.stars[stationB.starId]
       if (!Physics.isInMainConduitRange(stationA, stationB, starA)) return null
@@ -389,51 +387,19 @@ const Scheduler = {
 
       if (aAimed && bAimed) return { sourceKey: 'main', targetKey: 'main' }
 
-      // Phase 2: idle alignment for main conduit
-      // RESTRICTION: Only heartbeats can trigger a new alignment on an idle
-      // conduit. Drones and Vessels must wait for a coordination window
-      // opened by a heartbeat.
-      if (msg.type === 'base_check') {
+      if (msg.type === 'base_check' || msg.type === 'multi_hop_coordination') {
         if (csA.sessionEndSec <= now && csB.sessionEndSec <= now)
           return { sourceKey: 'main', targetKey: 'main' }
       }
       return null
     } else {
-      const keysA = this._commConduitKeys(stationA)
-      const keysB = this._commConduitKeys(stationB)
+      // DEDICATED CONDUITS: Direct lookup
+      const mapA = stationA.commConduitMap[stationB.id]
+      const mapB = stationB.commConduitMap[stationA.id]
+      if (!mapA || !mapB) return null
 
-      // Phase 1: channels already pointing at each other and ACTIVE
-      for (const kA of keysA) {
-        const csA = this._conduitState[stationA.id][kA]
-        if (csA.currentTargetId === stationB.id && csA.sessionEndSec > now) {
-          for (const kB of keysB) {
-            const csB = this._conduitState[stationB.id][kB]
-            if (csB.currentTargetId === stationA.id && csB.sessionEndSec > now) {
-              return { sourceKey: kA, targetKey: kB }
-            }
-          }
-        }
-      }
-
-      // Phase 2: find two idle channels
-      // RESTRICTION: Only periodic heartbeats (base_check) can trigger a
-      // new alignment on an idle conduit. All other traffic (data, probes, transits)
-      // must wait for an open bridge window established by these heartbeats.
-      if (msg.type === 'base_check') {
-        for (const kA of keysA) {
-          const csA = this._conduitState[stationA.id][kA]
-          if (csA.sessionEndSec <= now) {
-            for (const kB of keysB) {
-              const csB = this._conduitState[stationB.id][kB]
-              if (csB.sessionEndSec <= now) {
-                return { sourceKey: kA, targetKey: kB }
-              }
-            }
-          }
-        }
-      }
+      return { sourceKey: mapA.outgoing, targetKey: mapB.incoming }
     }
-    return null
   },
 
   _commConduitKeys(station) {
@@ -548,28 +514,33 @@ const Scheduler = {
       }
     }
 
-    // Step 3: deliver messages — run even if bridge.los is false, because a
-    // window that was open before occlusion may still have an in-flight payload
-    // that needs to be marked delivered when the travel time elapses.
+    // Step 3: deliver messages — run even if bridge.los is false
     for (const [stId, targetId] of [
       [bridge.stationAId, bridge.stationBId],
       [bridge.stationBId, bridge.stationAId],
     ]) {
+      const sA = Sim.stations[stId]
+      const sB = Sim.stations[targetId]
+      if (!sA || !sB) continue
+
       const wins = this._windows[stId]
       if (!wins) continue
       for (const arr of Object.values(wins)) {
         for (const w of arr) {
           if (w.targetId !== targetId) continue
           if (w.isReceiver) continue
-          // Only deliver windows that have been visually dispatched (signal sent)
-          if (!w._visuallyDispatched) continue
-          if (w._delivered) continue
+          if (!w._visuallyDispatched || w._delivered) continue
+
           const msg = Sim.messageMap[w.messageId]
-          if (!msg || msg.status === 'delivered' || msg.status === 'failed')
-            continue
-          const speedC = this._getMsgSpeed(msg, Sim.stations[msg.sourceId])
-          const travelSec = (bridge.lengthLY / speedC) * C.YEAR_IN_SECONDS
-          if (now < w.startSec + travelSec) continue
+          if (!msg || msg.status === 'delivered' || msg.status === 'failed') continue
+
+          const speedC = this._getMsgSpeed(msg, sA)
+          const currentDistLY = Vec3.dist(sA.worldPos, sB.worldPos)
+          const travelSec = (currentDistLY / speedC) * C.YEAR_IN_SECONDS
+
+          // Deliver when the back of the pulse arrives
+          if (now < w.startSec + travelSec + (w.windowSec || 0)) continue
+
           msg.status = 'delivered'
           msg.actualDeparture = w.startSec
           msg.actualArrival = now

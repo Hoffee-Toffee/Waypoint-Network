@@ -159,13 +159,7 @@ const UI = {
       Renderer.draw()
     })
     this._bindNumberInput('input-global-comm-count', (v) => {
-      const n = Math.max(1, Math.min(8, Math.round(v)))
-      for (const s of Object.values(Sim.stations)) {
-        s.commConduitCount = n
-        s.commConduits = makeCommConduits(n)
-      }
-      Scheduler.init()
-      Renderer.draw()
+      // Disabled in dedicated link model
     })
     this._bindNumberInput('input-global-cadence', (v) => {
       const c = Math.max(10, Math.min(300, Math.round(v)))
