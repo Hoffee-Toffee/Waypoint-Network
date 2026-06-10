@@ -29,18 +29,28 @@ const Queue = {
           const pairId = sid < nid ? sid + nid : nid + sid
           let hash = 0
           for (let i = 0; i < pairId.length; i++) hash = (hash << 5) - hash + pairId.charCodeAt(i)
-          const jitter = Math.abs(hash % 60) // 0-60s jitter
 
           const effectiveCadence = Math.min(station.baseCadenceSeconds, neighbour.baseCadenceSeconds)
+          const jitter = Math.abs(hash % effectiveCadence)
 
           const lastSent = station.lastHeartbeatSent[nid] ?? (jitter - effectiveCadence)
           if (Sim.simTimeSec - lastSent < effectiveCadence) continue
 
+          // SYNCED CHECK-IN: Master-slave relationship based on ID order
+          // Only the station with the "lower" ID initiates the scheduled heartbeat.
+          if (sid > nid) continue
+
           if (station.pendingCheckinDests.has(nid)) continue
 
+          // Trigger bidirectional pulse
           Scheduler.enqueue(sid, nid, 'base_check', 3)
+          Scheduler.enqueue(nid, sid, 'base_check', 3)
+
           station.pendingCheckinDests.add(nid)
+          neighbour.pendingCheckinDests.add(sid)
+
           station.lastHeartbeatSent[nid] = Sim.simTimeSec
+          neighbour.lastHeartbeatSent[sid] = Sim.simTimeSec
         }
       }
     }

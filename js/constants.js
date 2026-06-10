@@ -38,7 +38,7 @@ const C = {
   DEFAULT_COLLECTOR_AREA_KM2: 1000,
   DEFAULT_RESERVE_FLOOR: 0.2,
   DEFAULT_MATERIAL_WEIGHT: 1.0,
-  DEFAULT_BASE_CADENCE_S: 30,
+  DEFAULT_BASE_CADENCE_S: 3600,
   DEFAULT_MAX_BRIDGE_LY: 12,
   DEFAULT_MAX_BRIDGE_CONNECTIONS: 1000,
   DEFAULT_COMM_CONDUIT_COUNT: 8,
@@ -58,11 +58,11 @@ const C = {
   MAIN_CONDUIT_DOCK_COUNT: 25, // assume always free for now
 
   // ── Scheduling ────────────────────────────────────────────────────────────
-  MIN_CADENCE_S: 10,
-  MAX_CADENCE_S: 300,
+  MIN_CADENCE_S: 1,
+  MAX_CADENCE_S: 86400,
   OFFLINE_MISS_COUNT: 3, // consecutive missed check-ins before marking offline
-  MAX_LOG_ENTRIES: 120,
-  MAX_MESSAGES: 500,
+  MAX_LOG_ENTRIES: 500,
+  MAX_MESSAGES: 5000, // accommodate heartbeats for large networks
 
   // ── Rendering ────────────────────────────────────────────────────────────
   // Colours
@@ -91,6 +91,9 @@ const C = {
     drone_transit: 'rgba(255,180,   0, 0.95)', // amber
     vessel_transit: 'rgba(255,100,   0, 0.95)', // orange
     multi_hop_coordination: 'rgba(200,100, 255, 0.95)', // purple
+    manifest_ack: 'rgba(200, 100, 255, 0.95)',
+    main_booking: 'rgba(255, 200, 0, 0.95)',
+    main_booking_ack: 'rgba(255, 200, 0, 0.95)',
   },
 
   SIGNAL_GLOW_COLORS: {
@@ -101,6 +104,9 @@ const C = {
     drone_transit: 'rgba(255, 180,   0, 0.5)',
     vessel_transit: 'rgba(255, 100,   0, 0.5)',
     multi_hop_coordination: 'rgba(200, 100, 255, 0.5)',
+    manifest_ack: 'rgba(200, 100, 255, 0.5)',
+    main_booking: 'rgba(255, 200, 0, 0.5)',
+    main_booking_ack: 'rgba(255, 200, 0, 0.5)',
   },
 
   // Pixel sizes

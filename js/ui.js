@@ -162,7 +162,7 @@ const UI = {
       // Disabled in dedicated link model
     })
     this._bindNumberInput('input-global-cadence', (v) => {
-      const c = Math.max(10, Math.min(300, Math.round(v)))
+      const c = Math.max(1, Math.min(86400, Math.round(v)))
       for (const s of Object.values(Sim.stations)) s.baseCadenceSeconds = c
     })
 

@@ -197,7 +197,7 @@ const Scheduler = {
 
   enqueue(fromId, toId, type, priority, analystPath = null) {
     const station = Sim.stations[fromId]
-    if (!station) return
+    if (!station) return null
     const id = 'msg_' + ++Queue._msgCounter
     const msg = {
       id,
@@ -223,6 +223,7 @@ const Scheduler = {
       delete Sim.messageMap[evicted.id]
     }
     station.outboundQueue.add(id)
+    return msg
   },
 
   _processStationQueue(station, now) {
@@ -262,9 +263,12 @@ const Scheduler = {
       const windowSec = this._estimateWindowSec(msg)
       const speedC = this._getMsgSpeed(msg, station)
 
-      // Calculate travel time based on CURRENT distance
+      // REAL-TIME DISTANCE: calculate travel time based on current positions
       const currentDistLY = Vec3.dist(station.worldPos, nextStation.worldPos)
       const travelSec = (currentDistLY / speedC) * C.YEAR_IN_SECONDS
+
+      // SAFETY MARGIN: Ensure we have enough LOS for the pulse AND the travel time
+      // to avoid the bridge closing while the signal is in flight.
       const totalWindowNeeded = windowSec + travelSec
 
       const pair = this._findChannelPair(station, nextStation, now, msg)
@@ -274,12 +278,19 @@ const Scheduler = {
       const csA = this._conduitState[station.id][sourceKey]
       const csB = this._conduitState[nextStation.id][targetKey]
 
-      // NEW PROTOCOL: Non-heartbeat messages MUST piggyback on an existing session.
-      // This forces them to wait for the periodic link established by heartbeats.
+      // PROTOCOL ENFORCEMENT:
+      // Only heartbeats (base_check) can trigger a new COMM conduit alignment.
+      // Booking requests (main_booking) can trigger a new MAIN conduit alignment.
+      // All other traffic MUST piggyback on an existing session.
+      const canTriggerAlignment = (sourceKey === 'main')
+        ? (msg.type === 'main_booking' || msg.type === 'main_booking_ack')
+        : (msg.type === 'base_check')
+
       const isAlreadyAimed = csA.currentTargetId === nextHopId && csA.sessionEndSec > now
 
-      if (!isAlreadyAimed && msg.type !== 'base_check') {
-        // Wait for next heartbeat to open the window
+      if (!isAlreadyAimed && !canTriggerAlignment) {
+        // Wait for next alignment pulse to open the window
+        msg.status = 'awaiting_alignment'
         continue
       }
 
@@ -367,12 +378,12 @@ const Scheduler = {
   },
 
   // Find a free channel (conduit) pair between source and target.
-  // NEW MODEL: Each neighbor has a dedicated pair.
+  // NEW MODEL: Each neighbor has a dedicated pair for comms.
   _findChannelPair(stationA, stationB, now, msg) {
-    const useMain = msg.type === 'vessel_transit' || msg.type === 'drone_transit'
+    const useMain = msg.conduitType === 'main'
 
     if (useMain) {
-      // Main conduit logic remains shared for now (limited docks)
+      // Main conduit logic remains shared (limited hardware)
       const starA = Sim.stars[stationA.starId]
       const starB = Sim.stars[stationB.starId]
       if (!Physics.isInMainConduitRange(stationA, stationB, starA)) return null
@@ -387,7 +398,13 @@ const Scheduler = {
 
       if (aAimed && bAimed) return { sourceKey: 'main', targetKey: 'main' }
 
-      if (msg.type === 'base_check' || msg.type === 'multi_hop_coordination') {
+      // ALIGNMENT TRIGGERS:
+      // Only heartbeats and booking requests can trigger a new Main Conduit alignment.
+      const canTrigger = msg.type === 'base_check' ||
+                         msg.type === 'main_booking' ||
+                         msg.type === 'main_booking_ack'
+
+      if (canTrigger) {
         if (csA.sessionEndSec <= now && csB.sessionEndSec <= now)
           return { sourceKey: 'main', targetKey: 'main' }
       }
@@ -578,39 +595,47 @@ const Scheduler = {
   },
 
   _onMessageReachedFinalDestination(msg, station) {
-    if (msg.type === 'multi_hop_coordination') {
-      // Find where we are in the original analyst path
-      const ap = msg.analystPath
-      if (!ap) return
+    const ap = msg.analystPath
+    if (!ap) return
+    const scenario = Analyst._pendingScenario
+    if (!scenario) return
 
-      const isReverse = ap[0] === Analyst._pendingScenario?.toId
-      const isForward = ap[0] === Analyst._pendingScenario?.fromId
-
-      if (isForward) {
-        // Coordination probe reached target, now send turnaround back to source
+    if (msg.type === 'manifest') {
+      // Manifest reached target, now send ACK back to source
+      if (ap[0] === scenario.fromId) {
         const turnaroundPath = [...ap].reverse()
-        UI.appendLog('info', `Coordination probe reached ${station.name}. Returning ACK.`)
-        this.enqueue(
-          turnaroundPath[0],
-          turnaroundPath[turnaroundPath.length-1],
-          'multi_hop_coordination',
-          1,
-          turnaroundPath
-        )
-      } else if (isReverse) {
-        // Coordination ACK reached source, now inject the actual payload
-        const scenario = Analyst._pendingScenario
-        if (scenario && scenario.fromId === station.id) {
-          UI.appendLog('event', `Coordination complete. Injecting payload: ${scenario.type}`)
-          this.enqueue(
-            scenario.fromId,
-            scenario.toId,
-            scenario.type,
-            scenario.priority,
-            scenario.path
-          )
+        UI.appendLog('info', `Manifest received at ${station.name.replace(' Station','')}. Returning ACK.`)
+        this.enqueue(turnaroundPath[0], turnaroundPath[turnaroundPath.length-1], 'manifest_ack', 1, turnaroundPath)
+      }
+    } else if (msg.type === 'manifest_ack') {
+      // Manifest ACK reached source
+      if (ap[0] === scenario.toId && station.id === scenario.fromId) {
+        const needsMain = scenario.type === 'vessel_transit' || scenario.type === 'drone_transit'
+        if (needsMain) {
+          // Large payloads need main conduit booking
+          UI.appendLog('info', 'Manifest ACK received. Requesting Main Conduit booking.')
+          const m = this.enqueue(scenario.fromId, scenario.toId, 'main_booking', 1, scenario.path)
+          if (m) m.conduitType = 'main' // Force booking request onto main conduit to trigger alignment
+        } else {
+          // Data skip main booking
+          UI.appendLog('event', `Protocol handshake complete. Dispatching ${scenario.type}.`)
+          this.enqueue(scenario.fromId, scenario.toId, scenario.type, scenario.priority, scenario.path)
           Analyst._pendingScenario = null
         }
+      }
+    } else if (msg.type === 'main_booking') {
+      // Main booking request reached target
+      if (ap[0] === scenario.fromId) {
+        const turnaroundPath = [...ap].reverse()
+        UI.appendLog('info', 'Main booking request received. Confirming alignment.')
+        this.enqueue(turnaroundPath[0], turnaroundPath[turnaroundPath.length-1], 'main_booking_ack', 1, turnaroundPath)
+      }
+    } else if (msg.type === 'main_booking_ack') {
+      // Main booking ACK reached source
+      if (ap[0] === scenario.toId && station.id === scenario.fromId) {
+        UI.appendLog('event', `Protocol handshake complete. Dispatching ${scenario.type}.`)
+        this.enqueue(scenario.fromId, scenario.toId, scenario.type, scenario.priority, scenario.path)
+        Analyst._pendingScenario = null
       }
     }
   },

@@ -96,13 +96,13 @@ const Analyst = {
     document.getElementById('res-coord').textContent = this._formatTime(coordDelay)
     document.getElementById('res-total').textContent = this._formatTime(totalTime)
 
-    // 2. Play Scenario: Initiate Coordination Handshake
-    UI.appendLog('info', `Initiating coordination for: ${type} ${fromId} → ${toId}`)
+    // 2. Play Scenario: Initiate Protocol Handshake (Manifest -> ACK -> Payload)
+    UI.appendLog('info', `Initiating protocol: [Manifest] ${fromId} → ${toId}`)
 
     this._pendingScenario = { fromId, toId, type, priority, path }
 
-    // Send coordination probe first
-    Scheduler.enqueue(fromId, toId, 'multi_hop_coordination', 1, path)
+    // Send manifest first
+    Scheduler.enqueue(fromId, toId, 'manifest', 1, path)
 
     // Ensure simulation is running
     if (Sim.paused) UI.play()
