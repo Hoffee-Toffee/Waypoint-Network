@@ -179,7 +179,3 @@ const Queue = {
   },
 }
 
-// Helper: find a bridge regardless of which station is A vs B in the key
-function getBridgeForPair(idA, idB) {
-  return Sim.bridges[idA + '|' + idB] || Sim.bridges[idB + '|' + idA] || null
-}

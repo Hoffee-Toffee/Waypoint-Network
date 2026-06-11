@@ -279,17 +279,17 @@ const Scheduler = {
       const csB = this._conduitState[nextStation.id][targetKey]
 
       // PROTOCOL ENFORCEMENT:
-      // Only heartbeats (base_check) can trigger a new COMM conduit alignment.
-      // Booking requests (main_booking) can trigger a new MAIN conduit alignment.
-      // All other traffic MUST piggyback on an existing session.
-      const canTriggerAlignment = (sourceKey === 'main')
-        ? (msg.type === 'main_booking' || msg.type === 'main_booking_ack')
-        : (msg.type === 'base_check')
+      // Only heartbeats and coordination signals can trigger a new alignment.
+      // Payloads (data, drone_transit, vessel_transit) MUST piggyback
+      // on an existing session.
+      const isPayload = msg.type === 'data' ||
+                        msg.type === 'drone_transit' ||
+                        msg.type === 'vessel_transit'
 
       const isAlreadyAimed = csA.currentTargetId === nextHopId && csA.sessionEndSec > now
 
-      if (!isAlreadyAimed && !canTriggerAlignment) {
-        // Wait for next alignment pulse to open the window
+      if (!isAlreadyAimed && isPayload) {
+        // Wait for next heartbeat or coordination pulse to open the window
         msg.status = 'awaiting_alignment'
         continue
       }
@@ -502,7 +502,7 @@ const Scheduler = {
             !w.isReceiver &&
             w.targetId === targetId &&
             w.startSec <= now &&
-            w.endSec >= now,
+            w.endSec >= now, // VISIBILITY FIX: endSec already includes travelSec
         ),
       )
     }
@@ -628,7 +628,8 @@ const Scheduler = {
       if (ap[0] === scenario.fromId) {
         const turnaroundPath = [...ap].reverse()
         UI.appendLog('info', 'Main booking request received. Confirming alignment.')
-        this.enqueue(turnaroundPath[0], turnaroundPath[turnaroundPath.length-1], 'main_booking_ack', 1, turnaroundPath)
+        const m = this.enqueue(turnaroundPath[0], turnaroundPath[turnaroundPath.length-1], 'main_booking_ack', 1, turnaroundPath)
+        if (m) m.conduitType = 'main'
       }
     } else if (msg.type === 'main_booking_ack') {
       // Main booking ACK reached source
