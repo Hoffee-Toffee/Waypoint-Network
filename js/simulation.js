@@ -175,11 +175,12 @@ function makeStation(star) {
   return station
 }
 
-function addCommConduit(station, targetId) {
+function addCommConduit(station, targetId, type) {
   const id = station.commConduits.length
   const conduit = {
     id,
     targetId,
+    type, // 'incoming' | 'outgoing'
     mountAngleDeg: 0, // dynamic pointing
     xRangeDeg: 360,
     yRangeDeg: 360,
@@ -375,12 +376,12 @@ function rebuildBridgeList() {
     const stA = Sim.stations[a]
     const stB = Sim.stations[b]
     stA.commConduitMap[b] = {
-      outgoing: addCommConduit(stA, b),
-      incoming: addCommConduit(stA, b)
+      outgoing: addCommConduit(stA, b, 'outgoing'),
+      incoming: addCommConduit(stA, b, 'incoming')
     }
     stB.commConduitMap[a] = {
-      outgoing: addCommConduit(stB, a),
-      incoming: addCommConduit(stB, a)
+      outgoing: addCommConduit(stB, a, 'outgoing'),
+      incoming: addCommConduit(stB, a, 'incoming')
     }
   }
 }

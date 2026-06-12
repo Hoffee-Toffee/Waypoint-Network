@@ -97,15 +97,14 @@ const Analyst = {
     document.getElementById('res-total').textContent = this._formatTime(totalTime)
 
     // 2. Play Scenario: Initiate Protocol Handshake (Heartbeat -> Manifest -> ACK -> Payload)
-    UI.appendLog('info', `Initiating protocol: [Sync] ${fromId} ↔ ${path[1]}`)
+    UI.appendLog('info', `Initiating protocol: [Sync] ${fromId} → ${path[1]}`)
 
     this._pendingScenario = { fromId, toId, type, priority, path }
 
-    // Kickstart with an immediate heartbeat pair to open the first bridge
+    // Kickstart with an immediate heartbeat from source only (slave will respond upon receipt)
     Scheduler.enqueue(fromId, path[1], 'base_check', 1)
-    Scheduler.enqueue(path[1], fromId, 'base_check', 1)
 
-    // Send manifest (it will trigger alignment or wait for heartbeat)
+    // Send manifest (it will trigger its own alignment if allowed, or piggyback)
     Scheduler.enqueue(fromId, toId, 'manifest', 1, path)
 
     // Ensure simulation is running

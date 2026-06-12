@@ -91,6 +91,7 @@ const Scheduler = {
   init() {
     this._windows = {}
     this._conduitState = {}
+    this._mainBookings = {} // stationId -> [ { priority, endSec } ] (last 10)
     for (const id of Object.keys(Sim.stations)) {
       const st = Sim.stations[id]
       this._windows[id] = { main: [] }
@@ -310,7 +311,13 @@ const Scheduler = {
       // Calculate start time: avoid overlap at both ends.
       // Sender must be free: csA.sessionEndSec
       // Receiver must be free WHEN PULSE ARRIVES: csB.sessionEndSec - travelSec
-      const startSec = Math.max(now, csA.sessionEndSec, csB.sessionEndSec - travelSec) + slewSec
+      let startSec = Math.max(now, csA.sessionEndSec, csB.sessionEndSec - travelSec, msg.earliestStart || 0) + slewSec
+
+      // PRIORITY-AWARE SLOT RESERVATION (Main Conduit Only)
+      if (sourceKey === 'main') {
+          startSec = this._enforceMainQuotas(station, startSec, msg.priority)
+      }
+
       const endSec = startSec + totalWindowNeeded
 
       // Update both conduit states
@@ -319,6 +326,12 @@ const Scheduler = {
       csA.sessionEndSec = startSec + windowSec
       csB.currentTargetId = station.id
       csB.sessionEndSec = startSec + travelSec + windowSec
+
+      if (sourceKey === 'main') {
+          if (!this._mainBookings[station.id]) this._mainBookings[station.id] = []
+          this._mainBookings[station.id].push({ priority: msg.priority, endSec: startSec + windowSec })
+          if (this._mainBookings[station.id].length > 10) this._mainBookings[station.id].shift()
+      }
 
       // Add window to sender
       this._windows[station.id][sourceKey].push({
@@ -484,6 +497,34 @@ const Scheduler = {
     // This is a hook for future animation of the conduit rotating
   },
 
+  _enforceMainQuotas(station, startSec, priority) {
+      // 10-slot streak rules:
+      // - Max 5 Low-priority (P5)
+      // - Max 8 Medium-priority (P3)
+      // - High-priority (P1) can always book
+      const bookings = this._mainBookings[station.id] || []
+      if (priority === 1) return startSec // P1 ignores quotas
+
+      let ok = false
+      let candidateStart = startSec
+      while (!ok) {
+          const recent = bookings.filter(b => b.endSec > candidateStart - 86400) // streak in last 24h
+          const lowCount = recent.filter(b => b.priority >= 5).length
+          const medCount = recent.filter(b => b.priority >= 3).length
+
+          if (priority >= 5 && lowCount >= 5) {
+              candidateStart += 600 // push 10 mins
+              continue
+          }
+          if (priority >= 3 && medCount >= 8) {
+              candidateStart += 600
+              continue
+          }
+          ok = true
+      }
+      return candidateStart
+  },
+
   _updateBridgeFromSchedule(bridge, now) {
     // Step 1: update bridge status based on LOS (always, even when !los)
     if (!bridge.los) {
@@ -594,47 +635,92 @@ const Scheduler = {
     }
   },
 
+  _formatTime(s) {
+      const days = Math.floor(s / 86400)
+      const hrs = Math.floor((s % 86400) / 3600)
+      const mins = Math.floor((s % 3600) / 60)
+      const year = Math.floor(days / 365) + 2400
+      const doy = (days % 365) + 1
+      return `UST ${year}.${String(doy).padStart(3, '0')} ${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}`
+  },
+
   _onMessageReachedFinalDestination(msg, station) {
     const ap = msg.analystPath
     if (!ap) return
     const scenario = Analyst._pendingScenario
     if (!scenario) return
 
+    // CASCADING MULTI-HOP PROTOCOL:
+    // Every station confirms its own link before the request moves forward.
+
     if (msg.type === 'manifest') {
-      // Manifest reached target, now send ACK back to source
-      if (ap[0] === scenario.fromId) {
-        const turnaroundPath = [...ap].reverse()
-        UI.appendLog('info', `Manifest received at ${station.name.replace(' Station','')}. Returning ACK.`)
-        this.enqueue(turnaroundPath[0], turnaroundPath[turnaroundPath.length-1], 'manifest_ack', 1, turnaroundPath)
+      // Manifest arrived at a station (B in A->B, or C in B->C)
+      const isFinal = station.id === scenario.toId
+
+      // Calculate estimated arrival time of the vessel/payload at THIS station
+      // to carry forward into the next leg's earliestStart.
+      const fromSt = Sim.stations[msg.sourceId]
+      const speedC = this._getMsgSpeed({ type: scenario.type }, fromSt)
+      const distLY = Vec3.dist(fromSt.worldPos, station.worldPos)
+      const transitSec = (distLY / speedC) * C.YEAR_IN_SECONDS
+      const estimatedArrivalAtThisStation = msg.actualDeparture + transitSec
+
+      // 1. Confirm this leg back to sender
+      const ackPath = [station.id, msg.sourceId]
+      this.enqueue(station.id, msg.sourceId, 'manifest_ack', 1, ackPath)
+      UI.appendLog('info', `Leg Confirmed: ${msg.sourceId.replace('_station','')} → ${station.id.replace('_station','')} (Arrival: ${this._formatTime(estimatedArrivalAtThisStation)})`)
+
+      // 2. If not final, propagate the request to the NEXT hop
+      if (!isFinal) {
+        const myIdx = scenario.path.indexOf(station.id)
+        const remainingPath = scenario.path.slice(myIdx)
+
+        const m = this.enqueue(station.id, scenario.toId, 'manifest', 1, remainingPath)
+        if (m) {
+            // C knows the earliest possible start for B->C is when the vessel arrives at B
+            m.earliestStart = estimatedArrivalAtThisStation
+        }
       }
     } else if (msg.type === 'manifest_ack') {
-      // Manifest ACK reached source
-      if (ap[0] === scenario.toId && station.id === scenario.fromId) {
+      // Confirmation received by sender
+      if (station.id === scenario.fromId) {
+        // Source received confirmation from first hop.
+        // Once the FIRST leg is confirmed, we can start the Main booking phase
+        // (if needed) or the payload dispatch.
         const needsMain = scenario.type === 'vessel_transit' || scenario.type === 'drone_transit'
         if (needsMain) {
-          // Large payloads need main conduit booking
-          UI.appendLog('info', 'Manifest ACK received. Requesting Main Conduit booking.')
+          UI.appendLog('info', 'Route verified. Negotiating Main Conduit slots.')
           const m = this.enqueue(scenario.fromId, scenario.toId, 'main_booking', 1, scenario.path)
-          if (m) m.conduitType = 'main' // Force booking request onto main conduit to trigger alignment
+          if (m) m.conduitType = 'main'
         } else {
-          // Data skip main booking
-          UI.appendLog('event', `Protocol handshake complete. Dispatching ${scenario.type}.`)
+          UI.appendLog('event', `Route verified. Dispatching ${scenario.type}.`)
           this.enqueue(scenario.fromId, scenario.toId, scenario.type, scenario.priority, scenario.path)
           Analyst._pendingScenario = null
         }
       }
     } else if (msg.type === 'main_booking') {
-      // Main booking request reached target
-      if (ap[0] === scenario.fromId) {
-        const turnaroundPath = [...ap].reverse()
-        UI.appendLog('info', 'Main booking request received. Confirming alignment.')
-        const m = this.enqueue(turnaroundPath[0], turnaroundPath[turnaroundPath.length-1], 'main_booking_ack', 1, turnaroundPath)
-        if (m) m.conduitType = 'main'
+      // Main booking arrived (cascading)
+      const isFinal = station.id === scenario.toId
+
+      // Confirm this slot back to sender
+      const ackPath = [station.id, msg.sourceId]
+      const mAck = this.enqueue(station.id, msg.sourceId, 'main_booking_ack', 1, ackPath)
+      if (mAck) mAck.conduitType = 'main'
+
+      if (!isFinal) {
+        const myIdx = scenario.path.indexOf(station.id)
+        const nextId = scenario.path[myIdx + 1]
+        const remainingPath = scenario.path.slice(myIdx)
+
+        const m = this.enqueue(station.id, scenario.toId, 'main_booking', 1, remainingPath)
+        if (m) {
+            m.conduitType = 'main'
+            m.earliestStart = msg.actualArrival
+        }
       }
     } else if (msg.type === 'main_booking_ack') {
-      // Main booking ACK reached source
-      if (ap[0] === scenario.toId && station.id === scenario.fromId) {
-        UI.appendLog('event', `Protocol handshake complete. Dispatching ${scenario.type}.`)
+      if (station.id === scenario.fromId) {
+        UI.appendLog('event', `Main array booked. Dispatching ${scenario.type}.`)
         this.enqueue(scenario.fromId, scenario.toId, scenario.type, scenario.priority, scenario.path)
         Analyst._pendingScenario = null
       }

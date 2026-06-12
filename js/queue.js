@@ -42,15 +42,10 @@ const Queue = {
 
           if (station.pendingCheckinDests.has(nid)) continue
 
-          // Trigger bidirectional pulse
+          // Trigger master pulse (slave will respond upon arrival)
           Scheduler.enqueue(sid, nid, 'base_check', 3)
-          Scheduler.enqueue(nid, sid, 'base_check', 3)
-
           station.pendingCheckinDests.add(nid)
-          neighbour.pendingCheckinDests.add(sid)
-
           station.lastHeartbeatSent[nid] = Sim.simTimeSec
-          neighbour.lastHeartbeatSent[sid] = Sim.simTimeSec
         }
       }
     }
@@ -175,6 +170,14 @@ const Queue = {
         'event',
         `Check-in: ${fromName} → ${toName} (${sig.distanceLY.toFixed(2)} LY)`,
       )
+
+      // SLAVE RESPONSE: If we received a heartbeat and haven't sent one
+      // recently, fire back immediately to sync the virtual bridge.
+      const lastSent = toStation.lastHeartbeatSent?.[sig.fromId] ?? -Infinity
+      if (Sim.simTimeSec - lastSent > 60) {
+          Scheduler.enqueue(sig.toId, sig.fromId, 'base_check', 3)
+          if (toStation.lastHeartbeatSent) toStation.lastHeartbeatSent[sig.fromId] = Sim.simTimeSec
+      }
     }
   },
 }
