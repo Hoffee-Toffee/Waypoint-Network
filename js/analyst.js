@@ -104,8 +104,8 @@ const Analyst = {
     // Kickstart with an immediate heartbeat from source only (slave will respond upon receipt)
     Scheduler.enqueue(fromId, path[1], 'base_check', 1)
 
-    // Send manifest (it will trigger its own alignment if allowed, or piggyback)
-    Scheduler.enqueue(fromId, toId, 'manifest', 1, path)
+    // Send manifest to first hop
+    Scheduler.enqueue(fromId, path[1], 'manifest', 1, [fromId, path[1]])
 
     // Ensure simulation is running
     if (Sim.paused) UI.play()

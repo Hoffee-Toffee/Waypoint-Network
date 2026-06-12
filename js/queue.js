@@ -171,8 +171,7 @@ const Queue = {
         `Check-in: ${fromName} → ${toName} (${sig.distanceLY.toFixed(2)} LY)`,
       )
 
-      // SLAVE RESPONSE: If we received a heartbeat and haven't sent one
-      // recently, fire back immediately to sync the virtual bridge.
+      // SLAVE RESPONSE: fire back immediately to sync the virtual bridge.
       const lastSent = toStation.lastHeartbeatSent?.[sig.fromId] ?? -Infinity
       if (Sim.simTimeSec - lastSent > 60) {
           Scheduler.enqueue(sig.toId, sig.fromId, 'base_check', 3)

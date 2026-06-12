@@ -621,13 +621,14 @@ const Scheduler = {
             const toSt = Sim.stations[msg.destinationId]
             if (toSt) toSt.lastCheckinByNeighbour[msg.sourceId] = now
           }
-          if (msg.path && msg.path.length > 2) {
+          const isProtocol = msg.type === 'manifest' || msg.type === 'main_booking'
+          if (msg.path && msg.path.length > 2 && !isProtocol) {
             // Relay: shift path and put back in queue at the current station (sB)
             msg.path.shift()
             msg.status = 'queued'
             sB.outboundQueue.add(msg.id)
           } else {
-            // Reached final destination
+            // Reached final destination OR it's a protocol message that needs intercepting
             this._onMessageReachedFinalDestination(msg, sB)
           }
         }

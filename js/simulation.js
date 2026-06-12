@@ -181,10 +181,10 @@ function addCommConduit(station, targetId, type) {
     id,
     targetId,
     type, // 'incoming' | 'outgoing'
-    mountAngleDeg: 0, // dynamic pointing
+    mountAngleDeg: 0,
     xRangeDeg: 360,
     yRangeDeg: 360,
-    slewRateSecPerDeg: 1000, // basically instant for dedicated links
+    slewRateSecPerDeg: 1000,
     busy: false,
     schedule: [],
   }
