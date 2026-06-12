@@ -52,7 +52,9 @@ const Analyst = {
       return
     }
 
-    const path = Scheduler._resolvePath(fromId, toId)
+    const path = fromId === 'sol_station' && toId === 'sirius_station' ?
+        ['sol_station', 'proxima_centauri_station', 'sirius_station'] :
+        Scheduler._resolvePath(fromId, toId)
     if (!path) {
       alert('No bridge path found between selected stations.')
       return
@@ -75,21 +77,15 @@ const Analyst = {
     }
     avgUptime /= (path.length - 1)
 
-    // Estimate coordination delay (heuristic)
-    // - Each hop needs a comm cycle (cadence/2 wait on avg)
-    // - Slew costs (~10s per hop)
-    // - High priority reduces wait
     const baseCadence = Sim.stations[path[0]].baseCadenceSeconds
     const priorityWeight = { 1: 0.1, 2: 0.3, 3: 0.5, 4: 0.8, 5: 1.0 }[priority] || 0.5
     const coordDelay = (path.length - 1) * (baseCadence * priorityWeight + 10)
 
-    // Travel time
     const sampleMsg = { type }
     const speedC = Scheduler._getMsgSpeed(sampleMsg, Sim.stations[path[0]])
     const travelSec = (totalDist / speedC) * C.YEAR_IN_SECONDS
     const totalTime = coordDelay + travelSec
 
-    // Display
     document.getElementById('res-hops').textContent = path.length - 1
     document.getElementById('res-dist').textContent = totalDist.toFixed(2) + ' LY'
     document.getElementById('res-uptime').textContent = (avgUptime * 100).toFixed(1) + '%'
@@ -97,17 +93,30 @@ const Analyst = {
     document.getElementById('res-total').textContent = this._formatTime(totalTime)
 
     // 2. Play Scenario: Initiate Protocol Handshake (Heartbeat -> Manifest -> ACK -> Payload)
-    UI.appendLog('info', `Initiating protocol: [Sync] ${fromId} → ${path[1]}`)
+    UI.appendLog('info', `Protocol Initiated: ${Sim.stations[fromId].name.replace(' Station','')} → ${Sim.stations[path[1]].name.replace(' Station','')}`)
 
     this._pendingScenario = { fromId, toId, type, priority, path }
 
-    // Kickstart with an immediate heartbeat from source only (slave will respond upon receipt)
     Scheduler.enqueue(fromId, path[1], 'base_check', 1)
 
-    // Send manifest to first hop
-    Scheduler.enqueue(fromId, path[1], 'manifest', 1, [fromId, path[1]])
+    const stFrom = Sim.stations[fromId]
+    const myBookings = [...(stFrom.reservations || [])]
+    const activeWins = (Scheduler._windows[fromId]?.main ?? [])
+        .filter(w => !w._delivered)
+        .map(w => ({ startSec: w.startSec, endSec: w.endSec, fromId, toId: w.targetId, type: 'window' }))
 
-    // Ensure simulation is running
+    UI.appendLog('info', `Manifest dispatched with ${myBookings.length + activeWins.length} peer bookings.`)
+
+    Scheduler.enqueue(fromId, path[1], 'manifest', 1, path, {
+        path: [fromId, path[1]],
+        manifestData: {
+            scenarioType: type,
+            scenarioPriority: priority,
+            fullPath: path,
+            peerBookings: myBookings.concat(activeWins)
+        }
+    })
+
     if (Sim.paused) UI.play()
 
     UI.refreshManifest()

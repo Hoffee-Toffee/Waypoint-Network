@@ -161,6 +161,10 @@ function makeStation(star) {
     // Status
     online: true,
     selected: false,
+
+    // Planned usage for Main conduit (future slots booked via handshake)
+    // [ { startSec, endSec, msgId, type, fromId, toId } ]
+    reservations: [],
   }
 
   // outboundQueue as a Set for O(1) add/delete
@@ -184,7 +188,7 @@ function addCommConduit(station, targetId, type) {
     mountAngleDeg: 0,
     xRangeDeg: 360,
     yRangeDeg: 360,
-    slewRateSecPerDeg: 1000,
+    slewRateSecPerDeg: 0, // Dedicated links are always aligned
     busy: false,
     schedule: [],
   }
@@ -384,6 +388,8 @@ function rebuildBridgeList() {
       incoming: addCommConduit(stB, a, 'incoming')
     }
   }
+
+  if (Scheduler.reSync) Scheduler.reSync()
 }
 
 function makeBridge(sA, sB, lengthLY) {

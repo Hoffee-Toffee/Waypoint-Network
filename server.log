@@ -1,0 +1,12 @@
+127.0.0.1 - - [12/Jun/2026 14:29:18] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [12/Jun/2026 14:29:18] "GET /css/style.css HTTP/1.1" 200 -
+127.0.0.1 - - [12/Jun/2026 14:29:18] "GET /js/vec3.js HTTP/1.1" 200 -
+127.0.0.1 - - [12/Jun/2026 14:29:18] "GET /js/constants.js HTTP/1.1" 200 -
+127.0.0.1 - - [12/Jun/2026 14:29:18] "GET /js/stars.js HTTP/1.1" 200 -
+127.0.0.1 - - [12/Jun/2026 14:29:18] "GET /js/physics.js HTTP/1.1" 200 -
+127.0.0.1 - - [12/Jun/2026 14:29:18] "GET /js/scheduler.js HTTP/1.1" 200 -
+127.0.0.1 - - [12/Jun/2026 14:29:18] "GET /js/queue.js HTTP/1.1" 200 -
+127.0.0.1 - - [12/Jun/2026 14:29:18] "GET /js/simulation.js HTTP/1.1" 200 -
+127.0.0.1 - - [12/Jun/2026 14:29:18] "GET /js/renderer.js HTTP/1.1" 200 -
+127.0.0.1 - - [12/Jun/2026 14:29:18] "GET /js/analyst.js HTTP/1.1" 200 -
+127.0.0.1 - - [12/Jun/2026 14:29:18] "GET /js/ui.js HTTP/1.1" 200 -

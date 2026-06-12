@@ -425,4 +425,68 @@ const Physics = {
     const durB = (1 - sB.shadowArcDeg / 360) * sB.orbitalPeriodHours * 3600
     return Math.min(durA, durB)
   },
+
+  hasLOSAtTime(stationI, stationJ, starsById, timeSec) {
+    const starI = starsById[stationI.starId]
+    const starJ = starsById[stationJ.starId]
+
+    // Predict positions at future time
+    const dt = timeSec - Sim.simTimeSec
+    const pI = stationI.phaseRad + (2 * Math.PI / (stationI.orbitalPeriodHours * 3600)) * dt
+    const pJ = stationJ.phaseRad + (2 * Math.PI / (stationJ.orbitalPeriodHours * 3600)) * dt
+
+    const posI = this._posAtPhase(stationI, starI, pI)
+    const posJ = this._posAtPhase(stationJ, starJ, pJ)
+
+    const abx = posJ.x - posI.x
+    const aby = posJ.y - posI.y
+    const abz = posJ.z - posI.z
+    const ab2 = abx * abx + aby * aby + abz * abz
+
+    const stars = Array.isArray(starsById) ? starsById : Object.values(starsById)
+    for (const star of stars) {
+      const starRadiusLY = star.radiusM / C.LY_IN_METRES
+      const apx = star.x - posI.x
+      const apy = star.y - posI.y
+      const apz = star.z - posI.z
+      const t = ab2 > 0 ? Math.max(0, Math.min(1, (apx * abx + apy * aby + apz * abz) / ab2)) : 0
+      const cx = posI.x + abx * t
+      const cy = posI.y + aby * t
+      const cz = posI.z + abz * t
+      const d = Math.sqrt((star.x - cx) ** 2 + (star.y - cy) ** 2 + (star.z - cz) ** 2)
+      if (d < starRadiusLY) return false
+    }
+    return true
+  },
+
+  _posAtPhase(station, star, phaseRad) {
+    const rLY = station.orbitalRadiusAU * C.AU_IN_LY
+    let pos = Vec3.of(rLY * Math.cos(phaseRad), rLY * Math.sin(phaseRad), 0)
+    pos = Vec3.rotateAround(pos, Vec3.of(0, 0, 1), station.orbitLANDeg)
+    const lanRad = station.orbitLANDeg * C.DEG_TO_RAD
+    const lineOfNodes = Vec3.norm(Vec3.of(Math.cos(lanRad), Math.sin(lanRad), 0))
+    pos = Vec3.rotateAround(pos, lineOfNodes, station.orbitInclinationDeg)
+    return Vec3.add(Vec3.of(star.x, star.y, star.z), pos)
+  },
+
+  getNextLOSWindow(stationA, stationB, starsById, minStart, minDuration) {
+    let t = minStart
+    const step = 600 // 1 minute resolution for search
+    const maxSearch = 86400 * 7 // 1 week
+
+    while (t < minStart + maxSearch) {
+      if (this.hasLOSAtTime(stationA, stationB, starsById, t)) {
+        // Check if window is long enough
+        let end = t
+        while (end < t + minDuration + step && this.hasLOSAtTime(stationA, stationB, starsById, end)) {
+          end += step
+        }
+        if (end >= t + minDuration) return { start: t, end: end }
+        t = end + step
+      } else {
+        t += step
+      }
+    }
+    return null
+  },
 }

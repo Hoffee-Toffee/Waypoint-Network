@@ -12,12 +12,10 @@ const BgGen = {
     const ratePerSec = Sim.settings.backgroundSignals.ratePerHour / 3600
     this._accumSec += deltaSec
     const expected = this._accumSec * ratePerSec
-    // Poisson: fire messages based on accumulated probability
     while (this._accumSec * ratePerSec >= 1) {
       this._accumSec -= 1 / ratePerSec
       this._fireOne()
     }
-    // Also handle sub-1 probability stochastically
     if (Math.random() < expected % 1) {
       this._fireOne()
       this._accumSec = 0
@@ -38,10 +36,8 @@ const BgGen = {
       type = 'drone_transit'
     else type = 'vessel_transit'
 
-    // Pick source weighted by proximity to Sol station for realistic traffic
     let fromId, toId
     if (Sim.settings.backgroundSignals.distribution === 'proximity') {
-      // Higher chance for well-connected, nearby stations
       const weights = ids.map((id) => {
         const bridges = Object.values(Sim.bridges).filter(
           (b) => b.stationAId === id || b.stationBId === id,
@@ -63,7 +59,6 @@ const BgGen = {
       fromId = ids[Math.floor(Math.random() * ids.length)]
     }
 
-    // Pick a reachable destination (has a bridge path)
     const reachable = ids.filter((id) => {
       if (id === fromId) return false
       return getBridgeForPair(fromId, id) !== null
@@ -79,42 +74,47 @@ const BgGen = {
 
 // ── Scheduler ─────────────────────────────────────────────────────────────
 const Scheduler = {
-  // _windows[stationId][conduitKey] = [ { targetId, startSec, endSec, messageId,
-  //                                       _visuallyDispatched, _delivered } ]
   _windows: {},
-
-  // _conduitState[stationId][conduitKey] = { currentTargetId, sessionEndSec }
-  // Tracks what each physical conduit is currently aimed at and when the
-  // current session ends.  A conduit can only be retargeted after sessionEndSec.
   _conduitState: {},
+  _losCache: {},
+  _mainBookings: {},
 
   init() {
     this._windows = {}
     this._conduitState = {}
-    this._mainBookings = {} // stationId -> [ { priority, endSec } ] (last 10)
+    this._mainBookings = {}
+    this.reSync()
+  },
+
+  reSync() {
+    this._losCache = {}
     for (const id of Object.keys(Sim.stations)) {
       const st = Sim.stations[id]
-      this._windows[id] = { main: [] }
-      this._conduitState[id] = {
-        main: { currentTargetId: null, sessionEndSec: 0 },
-      }
-      for (let i = 0; i < st.commConduits.length; i++) {
-        const key = 'comm' + i
-        this._windows[id][key] = []
-        this._conduitState[id][key] = {
-          currentTargetId: st.commConduits[i].targetId,
-          sessionEndSec: 0,
+      if (!this._windows[id]) {
+        this._windows[id] = { main: [] }
+        this._conduitState[id] = {
+          main: { currentTargetId: null, sessionEndSec: 0 },
         }
       }
+
+      const keys = ['main', ...st.commConduits.map((_, i) => 'comm' + i)]
+      for (const key of keys) {
+        if (!this._windows[id][key]) {
+          this._windows[id][key] = []
+          const targetId = key === 'main' ? null : (st.commConduits[parseInt(key.replace('comm',''))]?.targetId ?? null)
+          this._conduitState[id][key] = {
+            currentTargetId: targetId,
+            sessionEndSec: 0,
+          }
+        }
+      }
+      if (!st.reservations) st.reservations = []
     }
   },
 
   tick(deltaSec) {
     const now = Sim.simTimeSec
 
-    // Pre-compute LOS remaining for each bridge once per tick.
-    // losRemainingSeconds does a 360-step orbital scan per call, so caching
-    // here avoids calling it N times per message in the queue processor.
     const losRemainingCache = {}
     for (const bridge of Object.values(Sim.bridges)) {
       if (!bridge.los) {
@@ -124,16 +124,11 @@ const Scheduler = {
       const sA = Sim.stations[bridge.stationAId]
       const sB = Sim.stations[bridge.stationBId]
       if (sA && sB) {
-        losRemainingCache[bridge.id] = Physics.losRemainingSeconds(
-          sA,
-          sB,
-          Sim.stars,
-        )
+        losRemainingCache[bridge.id] = Physics.losRemainingSeconds(sA, sB, Sim.stars)
       }
     }
     this._losCache = losRemainingCache
 
-    // Reset awaiting_alignment messages back to queued so they are retried.
     for (const station of Object.values(Sim.stations)) {
       for (const msgId of station.outboundQueue) {
         const msg = Sim.messageMap[msgId]
@@ -141,13 +136,15 @@ const Scheduler = {
       }
     }
 
-    // 1. Prune windows: keep if not yet expired OR if dispatched but not yet delivered
+    // 1. Prune windows and reservations
     for (const stId of Object.keys(this._windows)) {
+      const st = Sim.stations[stId]
+      if (st) st.reservations = (st.reservations || []).filter(r => Math.max(r.arrivalEnd || 0, r.endSec || 0) > now - 3600)
+
       for (const key of Object.keys(this._windows[stId])) {
         this._windows[stId][key] = this._windows[stId][key].filter(
           (w) => w.endSec > now || (w._visuallyDispatched && !w._delivered),
         )
-        // Update sessionEndSec: max busy duration of remaining windows
         const wins = this._windows[stId][key]
         const busyUntil = wins.length === 0 ? now : wins.reduce((m, w) => Math.max(m, w.startSec + (w.windowSec || 0)), 0)
         this._conduitState[stId][key].sessionEndSec = Math.max(now, busyUntil)
@@ -160,7 +157,7 @@ const Scheduler = {
       this._processStationQueue(station, now)
     }
 
-    // 3. Spawn visual signal dots for windows that have just become active
+    // 3. Spawn visual signal dots
     for (const stId of Object.keys(this._windows)) {
       for (const key of Object.keys(this._windows[stId])) {
         for (const w of this._windows[stId][key]) {
@@ -172,7 +169,6 @@ const Scheduler = {
           const fromSt = Sim.stations[stId]
           const toSt = Sim.stations[w.targetId]
 
-          // Fix: Clear pending flag on dispatch to allow scheduling next interval
           if (msg.type === 'base_check' && fromSt) {
             fromSt.pendingCheckinDests.delete(w.targetId)
           }
@@ -185,7 +181,7 @@ const Scheduler = {
       }
     }
 
-    // 4. Advance slew state (visual only hook)
+    // 4. Advance slew state
     for (const station of Object.values(Sim.stations)) {
       this._advanceSlew(station, deltaSec)
     }
@@ -196,7 +192,7 @@ const Scheduler = {
     }
   },
 
-  enqueue(fromId, toId, type, priority, analystPath = null) {
+  enqueue(fromId, toId, type, priority, analystPath = null, options = {}) {
     const station = Sim.stations[fromId]
     if (!station) return null
     const id = 'msg_' + ++Queue._msgCounter
@@ -206,16 +202,17 @@ const Scheduler = {
       priority,
       sourceId: fromId,
       destinationId: toId,
-      path: null, // resolved by scheduler
-      analystPath, // stable copy for UI tracking
+      path: options.path || null,
+      analystPath,
       status: 'queued',
-      conduitType: type === 'vessel_transit' ? 'main' : 'comm',
+      conduitType: (type === 'vessel_transit' || options.conduitType === 'main') ? 'main' : 'comm',
       createdAt: Sim.simTimeSec,
       scheduledDeparture: null,
       actualDeparture: null,
       estimatedArrival: null,
       actualArrival: null,
       hopLog: [],
+      ...options,
     }
     Sim.messages.push(msg)
     Sim.messageMap[id] = msg
@@ -228,7 +225,6 @@ const Scheduler = {
   },
 
   _processStationQueue(station, now) {
-    // Sort queue: P1 first, then by creation time
     const sortedQueue = [...station.outboundQueue].sort((a, b) => {
       const ma = Sim.messageMap[a]
       const mb = Sim.messageMap[b]
@@ -241,7 +237,6 @@ const Scheduler = {
       const msg = Sim.messageMap[msgId]
       if (!msg || msg.status !== 'queued') continue
 
-      // Resolve path if not yet done
       if (!msg.path) {
         msg.path = this._resolvePath(msg.sourceId, msg.destinationId)
         if (!msg.path || msg.path.length < 2) {
@@ -254,8 +249,6 @@ const Scheduler = {
       const nextHopId = msg.path[1]
       const bridge = getBridgeForPair(station.id, nextHopId)
       if (!bridge || !bridge.los) {
-        // LOS unavailable — clear cached path so we re-route on next attempt
-        msg.path = null
         msg.status = 'awaiting_alignment'
         continue
       }
@@ -263,13 +256,8 @@ const Scheduler = {
       const nextStation = Sim.stations[nextHopId]
       const windowSec = this._estimateWindowSec(msg)
       const speedC = this._getMsgSpeed(msg, station)
-
-      // REAL-TIME DISTANCE: calculate travel time based on current positions
       const currentDistLY = Vec3.dist(station.worldPos, nextStation.worldPos)
       const travelSec = (currentDistLY / speedC) * C.YEAR_IN_SECONDS
-
-      // SAFETY MARGIN: Ensure we have enough LOS for the pulse AND the travel time
-      // to avoid the bridge closing while the signal is in flight.
       const totalWindowNeeded = windowSec + travelSec
 
       const pair = this._findChannelPair(station, nextStation, now, msg)
@@ -279,20 +267,22 @@ const Scheduler = {
       const csA = this._conduitState[station.id][sourceKey]
       const csB = this._conduitState[nextStation.id][targetKey]
 
-      // PROTOCOL ENFORCEMENT:
-      // Only heartbeats and coordination signals can trigger a new alignment.
-      // Payloads (data, drone_transit, vessel_transit) MUST piggyback
-      // on an existing session.
       const isPayload = msg.type === 'data' ||
                         msg.type === 'drone_transit' ||
                         msg.type === 'vessel_transit'
 
       const isAlreadyAimed = csA.currentTargetId === nextHopId && csA.sessionEndSec > now
 
-      if (!isAlreadyAimed && isPayload) {
-        // Wait for next heartbeat or coordination pulse to open the window
+      if (!isAlreadyAimed && isPayload && !msg.isReserved) {
         msg.status = 'awaiting_alignment'
         continue
+      }
+
+      if (msg.isReserved) {
+        const slewSec = this._slewCost(station, sourceKey, nextHopId)
+        if (now < msg.earliestStart - slewSec - 5) {
+          continue
+        }
       }
 
       const slewSec = isAlreadyAimed
@@ -308,32 +298,65 @@ const Scheduler = {
         continue
       }
 
-      // Calculate start time: avoid overlap at both ends.
-      // Sender must be free: csA.sessionEndSec
-      // Receiver must be free WHEN PULSE ARRIVES: csB.sessionEndSec - travelSec
       let startSec = Math.max(now, csA.sessionEndSec, csB.sessionEndSec - travelSec, msg.earliestStart || 0) + slewSec
 
-      // PRIORITY-AWARE SLOT RESERVATION (Main Conduit Only)
       if (sourceKey === 'main') {
+        if (msg.isReserved) {
+          startSec = msg.earliestStart
+          if (startSec < now - 3600) {
+            UI.appendLog('error', `Reservation lapsed for ${msg.type} at ${station.name.replace(' Station','')} (Start: ${this._formatTime(startSec)}, Now: ${this._formatTime(now)})`)
+            msg.status = 'failed'
+            station.outboundQueue.delete(msgId)
+            continue
+          }
+        } else {
           startSec = this._enforceMainQuotas(station, startSec, msg.priority)
+          let ok = false
+          while (!ok) {
+            let conflict = null
+            const myEndSec = startSec + windowSec
+            const arrivalStart = startSec + travelSec
+            const arrivalEnd = arrivalStart + windowSec
+
+            for (const b of (station.reservations || [])) {
+              if (!(myEndSec <= b.startSec || startSec >= b.endSec)) { conflict = b; break; }
+            }
+            if (!conflict) {
+              for (const b of (nextStation.reservations || [])) {
+                if (!(arrivalEnd <= b.startSec || arrivalStart >= b.endSec)) { conflict = b; break; }
+              }
+            }
+            if (conflict) {
+              startSec = (arrivalEnd > conflict.startSec && arrivalStart < conflict.endSec)
+                ? conflict.endSec - travelSec + 1
+                : conflict.endSec + 1
+            } else {
+              ok = true
+            }
+          }
+        }
       }
 
       const endSec = startSec + totalWindowNeeded
 
-      // Update both conduit states
-      // Free them after the pulse duration (windowSec)
       csA.currentTargetId = nextHopId
       csA.sessionEndSec = startSec + windowSec
       csB.currentTargetId = station.id
       csB.sessionEndSec = startSec + travelSec + windowSec
 
       if (sourceKey === 'main') {
-          if (!this._mainBookings[station.id]) this._mainBookings[station.id] = []
-          this._mainBookings[station.id].push({ priority: msg.priority, endSec: startSec + windowSec })
-          if (this._mainBookings[station.id].length > 10) this._mainBookings[station.id].shift()
+        if (!this._mainBookings[station.id]) this._mainBookings[station.id] = []
+        this._mainBookings[station.id].push({ priority: msg.priority, endSec: startSec + windowSec })
+        if (this._mainBookings[station.id].length > 10) this._mainBookings[station.id].shift()
+
+        if (msg.isReserved) {
+          const res = msg.bookingRef
+          const match = (r) => (res && r.msgId === res.msgId) || (r.type === msg.type && Math.abs(r.startSec - msg.earliestStart) < 1 && r.toId === nextHopId)
+          station.reservations = (station.reservations || []).filter(r => !match(r))
+          nextStation.reservations = (nextStation.reservations || []).filter(r => !match(r))
+        }
       }
 
-      // Add window to sender
       this._windows[station.id][sourceKey].push({
         targetId: nextHopId,
         startSec,
@@ -344,7 +367,6 @@ const Scheduler = {
         _delivered: false,
       })
 
-      // Add window to receiver (offset by travel time)
       this._windows[nextStation.id][targetKey].push({
         targetId: station.id,
         startSec: startSec + travelSec,
@@ -359,13 +381,10 @@ const Scheduler = {
       msg.status = 'scheduled'
       msg.scheduledDeparture = startSec
       msg.estimatedArrival = endSec
-
-      // Remove from outbound queue — now tracked by window
       station.outboundQueue.delete(msgId)
     }
   },
 
-  // Simple BFS path resolution using bridge graph
   _resolvePath(fromId, toId) {
     if (fromId === toId) return [fromId]
     const visited = new Set([fromId])
@@ -373,7 +392,7 @@ const Scheduler = {
     while (queue.length) {
       const path = queue.shift()
       const current = path[path.length - 1]
-      const neighbours = this._getNeighbours(current)
+      const neighbours = Sim.adjacency[current] ?? []
       for (const nid of neighbours) {
         if (visited.has(nid)) continue
         const newPath = [...path, nid]
@@ -385,55 +404,32 @@ const Scheduler = {
     return null
   },
 
-  _getNeighbours(stationId) {
-    // Use precomputed adjacency list (rebuilt with bridges) for O(1) lookup
-    return Sim.adjacency[stationId] ?? []
-  },
-
-  // Find a free channel (conduit) pair between source and target.
-  // NEW MODEL: Each neighbor has a dedicated pair for comms.
   _findChannelPair(stationA, stationB, now, msg) {
     const useMain = msg.conduitType === 'main'
-
     if (useMain) {
-      // Main conduit logic remains shared (limited hardware)
       const starA = Sim.stars[stationA.starId]
       const starB = Sim.stars[stationB.starId]
       if (!Physics.isInMainConduitRange(stationA, stationB, starA)) return null
       if (!Physics.isInMainConduitRange(stationB, stationA, starB)) return null
-
       const csA = this._conduitState[stationA.id]?.main
       const csB = this._conduitState[stationB.id]?.main
       if (!csA || !csB) return null
-
-      const aAimed = csA.currentTargetId === stationB.id && csA.sessionEndSec > now
-      const bAimed = csB.currentTargetId === stationA.id && csB.sessionEndSec > now
-
-      if (aAimed && bAimed) return { sourceKey: 'main', targetKey: 'main' }
-
-      // ALIGNMENT TRIGGERS:
-      // Only heartbeats and booking requests can trigger a new Main Conduit alignment.
-      const canTrigger = msg.type === 'base_check' ||
-                         msg.type === 'main_booking' ||
-                         msg.type === 'main_booking_ack'
-
-      if (canTrigger) {
-        if (csA.sessionEndSec <= now && csB.sessionEndSec <= now)
+      if (csA.currentTargetId === stationB.id && csA.sessionEndSec > now &&
+          csB.currentTargetId === stationA.id && csB.sessionEndSec > now) {
+        return { sourceKey: 'main', targetKey: 'main' }
+      }
+      if (msg.type === 'base_check' || msg.isReserved) {
+        if (csA.sessionEndSec <= now + 10 && csB.sessionEndSec <= now + 10) {
           return { sourceKey: 'main', targetKey: 'main' }
+        }
       }
       return null
     } else {
-      // DEDICATED CONDUITS: Direct lookup
       const mapA = stationA.commConduitMap[stationB.id]
       const mapB = stationB.commConduitMap[stationA.id]
       if (!mapA || !mapB) return null
-
       return { sourceKey: mapA.outgoing, targetKey: mapB.incoming }
     }
-  },
-
-  _commConduitKeys(station) {
-    return station.commConduits.map((_, i) => 'comm' + i)
   },
 
   _getMsgSpeed(msg, station) {
@@ -463,9 +459,6 @@ const Scheduler = {
     return base[msg.type] ?? 10
   },
 
-  // Seconds to slew conduit from its last pointing to face targetId.
-  // Uses actual angular distance between the last-target direction and the
-  // new target direction, multiplied by the conduit's slew rate.
   _slewCost(station, conduitKey, targetId) {
     const cs = this._conduitState[station.id]?.[conduitKey]
     const rate =
@@ -475,7 +468,7 @@ const Scheduler = {
             ?.slewRateSecPerDeg ?? C.COMM_CONDUIT_SLEW_RATE_S_DEG)
 
     const lastTargetId = cs?.currentTargetId
-    if (!lastTargetId) return 5 // small startup cost from rest
+    if (!lastTargetId) return 5
 
     const lastStation = Sim.stations[lastTargetId]
     const targetStation = Sim.stations[targetId]
@@ -486,34 +479,22 @@ const Scheduler = {
     return Vec3.angleDeg(toLast, toNew) * rate
   },
 
-  _setConduitTarget() {
-    // Replaced by direct _conduitState updates in _processStationQueue
-  },
-
   _advanceSlew(station, deltaSec) {
-    // Main conduit: track current target direction
-    // (visual only — actual physics check uses isInMainConduitRange)
-    // Nothing to advance for pure direction tracking in current model
-    // This is a hook for future animation of the conduit rotating
   },
 
   _enforceMainQuotas(station, startSec, priority) {
-      // 10-slot streak rules:
-      // - Max 5 Low-priority (P5)
-      // - Max 8 Medium-priority (P3)
-      // - High-priority (P1) can always book
       const bookings = this._mainBookings[station.id] || []
-      if (priority === 1) return startSec // P1 ignores quotas
+      if (priority === 1) return startSec
 
       let ok = false
       let candidateStart = startSec
       while (!ok) {
-          const recent = bookings.filter(b => b.endSec > candidateStart - 86400) // streak in last 24h
+          const recent = bookings.filter(b => b.endSec > candidateStart - 86400)
           const lowCount = recent.filter(b => b.priority >= 5).length
           const medCount = recent.filter(b => b.priority >= 3).length
 
           if (priority >= 5 && lowCount >= 5) {
-              candidateStart += 600 // push 10 mins
+              candidateStart += 600
               continue
           }
           if (priority >= 3 && medCount >= 8) {
@@ -526,14 +507,10 @@ const Scheduler = {
   },
 
   _updateBridgeFromSchedule(bridge, now) {
-    // Step 1: update bridge status based on LOS (always, even when !los)
     if (!bridge.los) {
       if (bridge.status === 'active') bridge.status = 'occluded'
     }
 
-    // Step 2: check for active scheduling windows (regardless of current LOS,
-    // since a window may have been open before LOS was lost and the payload
-    // is already in flight toward the destination).
     const hasActiveWindow = (stId, targetId) => {
       const wins = this._windows[stId]
       if (!wins) return false
@@ -543,14 +520,11 @@ const Scheduler = {
             !w.isReceiver &&
             w.targetId === targetId &&
             w.startSec <= now &&
-            w.endSec >= now, // VISIBILITY FIX: endSec already includes travelSec
+            w.endSec >= now,
         ),
       )
     }
 
-    const sA = Sim.stations[bridge.stationAId]
-    const sB = Sim.stations[bridge.stationBId]
-    // Only open bridge status if LOS is clear
     if (bridge.los) {
       const isActive =
         hasActiveWindow(bridge.stationAId, bridge.stationBId) ||
@@ -559,20 +533,11 @@ const Scheduler = {
       if (isActive && bridge.status !== 'active') {
         bridge.status = 'active'
         bridge.activeSince = now
-        UI.appendLog(
-          'event',
-          `Bridge opened: ${sA.name.replace(' Station', '')} ↔ ${sB.name.replace(' Station', '')}`,
-        )
       } else if (!isActive && bridge.status === 'active') {
         bridge.status = 'inactive'
-        UI.appendLog(
-          'info',
-          `Bridge closed: ${sA.name.replace(' Station', '')} ↔ ${sB.name.replace(' Station', '')}`,
-        )
       }
     }
 
-    // Step 3: deliver messages — run even if bridge.los is false
     for (const [stId, targetId] of [
       [bridge.stationAId, bridge.stationBId],
       [bridge.stationBId, bridge.stationAId],
@@ -596,39 +561,49 @@ const Scheduler = {
           const currentDistLY = Vec3.dist(sA.worldPos, sB.worldPos)
           const travelSec = (currentDistLY / speedC) * C.YEAR_IN_SECONDS
 
-          // Deliver when the back of the pulse arrives
           if (now < w.startSec + travelSec + (w.windowSec || 0)) continue
 
           msg.status = 'delivered'
           msg.actualDeparture = w.startSec
           msg.actualArrival = now
           w._delivered = true
-          const fromName =
-            Sim.stations[msg.sourceId]?.name.replace(' Station', '') ??
-            msg.sourceId
-          const toName =
-            Sim.stations[msg.destinationId]?.name.replace(' Station', '') ??
-            msg.destinationId
-          UI.appendLog(
-            'event',
-            `Delivered [${msg.type}] P${msg.priority}: ${fromName}→${toName}`,
-          )
+
           if (msg.type === 'base_check') {
-            // Fix: Clear pending flag on delivery so next heartbeat can be scheduled
             const fromSt = Sim.stations[msg.sourceId]
             if (fromSt) fromSt.pendingCheckinDests.delete(msg.destinationId)
-
             const toSt = Sim.stations[msg.destinationId]
             if (toSt) toSt.lastCheckinByNeighbour[msg.sourceId] = now
           }
-          const isProtocol = msg.type === 'manifest' || msg.type === 'main_booking'
+
+          const scenario = Analyst._pendingScenario
+          const isProtocol = msg.type === 'manifest' || msg.type === 'manifest_ack'
+          const isScenarioPayload = scenario && msg.type === scenario.type
+
           if (msg.path && msg.path.length > 2 && !isProtocol) {
-            // Relay: shift path and put back in queue at the current station (sB)
             msg.path.shift()
             msg.status = 'queued'
+
+            if (isScenarioPayload) {
+                const nextTargetId = msg.path[1] || scenario.toId
+                const res = (sB.reservations || []).find(r =>
+                    r.fromId === sB.id &&
+                    r.type === msg.type &&
+                    r.toId === nextTargetId &&
+                    !r.isReceiver &&
+                    Math.max(r.arrivalEnd || 0, r.endSec || 0) >= now - 3600
+                )
+                if (res) {
+                    msg.earliestStart = res.startSec
+                    msg.isReserved = true
+                    msg.bookingRef = res
+                    UI.appendLog('info', `Relay picked up reservation at ${sB.name.replace(' Station','')}: ${this._formatTime(res.startSec)}`)
+                } else {
+                    UI.appendLog('info', `Waiting for downstream reservation for ${msg.type} at ${sB.name.replace(' Station','')}`)
+                }
+            }
+            UI.appendLog('info', `Relaying ${msg.type} from ${sB.name.replace(' Station','')} to ${msg.path[1].replace('_station','')}`)
             sB.outboundQueue.add(msg.id)
           } else {
-            // Reached final destination OR it's a protocol message that needs intercepting
             this._onMessageReachedFinalDestination(msg, sB)
           }
         }
@@ -637,94 +612,194 @@ const Scheduler = {
   },
 
   _formatTime(s) {
-      const days = Math.floor(s / 86400)
-      const hrs = Math.floor((s % 86400) / 3600)
-      const mins = Math.floor((s % 3600) / 60)
-      const year = Math.floor(days / 365) + 2400
-      const doy = (days % 365) + 1
-      return `UST ${year}.${String(doy).padStart(3, '0')} ${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}`
+    const days = Math.floor(s / 86400)
+    const hrs = Math.floor((s % 86400) / 3600)
+    const mins = Math.floor((s % 3600) / 60)
+    const year = Math.floor(days / 365) + 2400
+    const doy = (days % 365) + 1
+    return `UST ${year}.${String(doy).padStart(3, '0')} ${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}`
+  },
+
+  _findFreeSlot(fromSt, toSt, minStart, duration, transitSec, peerBookings = []) {
+    const horizon = minStart - 3600
+    const toBookings = (toSt.reservations || [])
+      .concat((Scheduler._windows[toSt.id]?.main ?? [])
+        .filter(w => !w._delivered)
+        .map(w => ({ startSec: w.startSec, endSec: w.endSec })))
+      .filter(b => b.endSec > horizon)
+
+    const fromBookings = (fromSt.reservations || [])
+      .concat((Scheduler._windows[fromSt.id]?.main ?? [])
+        .filter(w => !w._delivered)
+        .map(w => ({ startSec: w.startSec, endSec: w.endSec })))
+      .concat(peerBookings)
+      .filter(b => b.endSec > horizon)
+
+    let t = minStart
+    while (t < minStart + 86400 * 365) {
+      const losWindow = Physics.getNextLOSWindow(fromSt, toSt, Sim.stars, t, duration, transitSec)
+      if (!losWindow) return null
+
+      let candidateStart = Math.max(t, losWindow.start)
+      const slewSec = this._slewCost(fromSt, 'main', toSt.id)
+      candidateStart = Math.max(candidateStart, candidateStart + slewSec)
+
+      const candidateEnd = candidateStart + duration
+      const arrivalStart = candidateStart + transitSec
+      const arrivalEnd = arrivalStart + duration
+
+      let conflict = null
+      for (const b of fromBookings) {
+        if (!(candidateEnd <= b.startSec || candidateStart >= b.endSec)) { conflict = b; break; }
+      }
+      if (!conflict) {
+        for (const b of toBookings) {
+          if (!(arrivalEnd <= b.startSec || arrivalStart >= b.endSec)) { conflict = b; break; }
+        }
+      }
+
+      if (conflict) {
+        if (arrivalEnd > conflict.startSec && arrivalStart < conflict.endSec) {
+          t = conflict.endSec - transitSec + 1
+        } else {
+          t = conflict.endSec + 1
+        }
+      } else {
+        return {
+          sender: { start: candidateStart, end: candidateEnd },
+          receiver: { start: arrivalStart, end: arrivalEnd }
+        }
+      }
+    }
+    return null
   },
 
   _onMessageReachedFinalDestination(msg, station) {
     const ap = msg.analystPath
     if (!ap) return
     const scenario = Analyst._pendingScenario
-    if (!scenario) return
-
-    // CASCADING MULTI-HOP PROTOCOL:
-    // Every station confirms its own link before the request moves forward.
+    if (!scenario) {
+        if (msg.type === 'manifest') UI.appendLog('error', 'Manifest reached destination but no scenario is pending.')
+        return
+    }
 
     if (msg.type === 'manifest') {
-      // Manifest arrived at a station (B in A->B, or C in B->C)
-      const isFinal = station.id === scenario.toId
+      const data = msg.manifestData
+      if (!data) {
+        UI.appendLog('error', 'Manifest missing data.')
+        return
+      }
 
-      // Calculate estimated arrival time of the vessel/payload at THIS station
-      // to carry forward into the next leg's earliestStart.
       const fromSt = Sim.stations[msg.sourceId]
-      const speedC = this._getMsgSpeed({ type: scenario.type }, fromSt)
-      const distLY = Vec3.dist(fromSt.worldPos, station.worldPos)
+      const toSt = station
+      const isFinal = toSt.id === data.fullPath[data.fullPath.length - 1]
+
+      const transitType = data.scenarioType
+      const speedC = this._getMsgSpeed({ type: transitType }, fromSt)
+      const distLY = Vec3.dist(fromSt.worldPos, toSt.worldPos)
       const transitSec = (distLY / speedC) * C.YEAR_IN_SECONDS
-      const estimatedArrivalAtThisStation = msg.actualDeparture + transitSec
+      const pulseSec = this._estimateWindowSec({ type: transitType })
 
-      // 1. Confirm this leg back to sender
-      const ackPath = [station.id, msg.sourceId]
-      this.enqueue(station.id, msg.sourceId, 'manifest_ack', 1, ackPath)
-      UI.appendLog('info', `Leg Confirmed: ${msg.sourceId.replace('_station','')} → ${station.id.replace('_station','')} (Arrival: ${this._formatTime(estimatedArrivalAtThisStation)})`)
+      const commTransitSec = (distLY / C.COMM_SIGNAL_SPEED_C) * C.YEAR_IN_SECONDS
+      const slewSecAtFrom = this._slewCost(fromSt, 'main', toSt.id)
+      const minStart = Math.max(Sim.simTimeSec + commTransitSec + slewSecAtFrom + 30, msg.earliestStart || 0)
 
-      // 2. If not final, propagate the request to the NEXT hop
-      if (!isFinal) {
-        const myIdx = scenario.path.indexOf(station.id)
-        const remainingPath = scenario.path.slice(myIdx)
+      const peerBookings = data.peerBookings || []
 
-        const m = this.enqueue(station.id, scenario.toId, 'manifest', 1, remainingPath)
-        if (m) {
-            // C knows the earliest possible start for B->C is when the vessel arrives at B
-            m.earliestStart = estimatedArrivalAtThisStation
+      let resAtFrom = (fromSt.reservations || []).find(
+        (b) =>
+          b.fromId === fromSt.id &&
+          b.toId === toSt.id &&
+          b.type === transitType &&
+          b.startSec >= minStart &&
+          !b.isReceiver
+      )
+
+      let resInfo
+      if (resAtFrom) {
+        UI.appendLog('info', `Piggybacking leg: ${fromSt.name.replace(' Station', '')} → ${toSt.name.replace(' Station', '')} @ ${this._formatTime(resAtFrom.startSec)}`)
+        resInfo = resAtFrom
+      } else {
+        const slot = this._findFreeSlot(fromSt, toSt, minStart, pulseSec, transitSec, peerBookings)
+        if (!slot) {
+          UI.appendLog('error', `No slot found for ${fromSt.name} -> ${toSt.name}`)
+          return
         }
+        resInfo = {
+            msgId: 'res_' + ++Queue._msgCounter,
+            type: transitType,
+            fromId: fromSt.id,
+            toId: toSt.id,
+            startSec: slot.sender.start,
+            endSec: slot.sender.end,
+            arrivalStart: slot.receiver.start,
+            arrivalEnd: slot.receiver.end
+        }
+
+        if (!fromSt.reservations) fromSt.reservations = []
+        if (!toSt.reservations) toSt.reservations = []
+        fromSt.reservations.push({ ...resInfo, isReceiver: false })
+        toSt.reservations.push({
+            ...resInfo,
+            isReceiver: true,
+            startSec: resInfo.arrivalStart,
+            endSec: resInfo.arrivalEnd
+        })
+
+        UI.appendLog('info', `Leg Booked: ${fromSt.name.replace(' Station', '')} → ${toSt.name.replace(' Station', '')} @ ${this._formatTime(resInfo.startSec)}`)
+      }
+
+      this.enqueue(toSt.id, fromSt.id, 'manifest_ack', 1, data.fullPath, {
+        path: [toSt.id, fromSt.id],
+        bookingRef: resInfo,
+      })
+
+      if (!isFinal) {
+        const myIdx = data.fullPath.indexOf(toSt.id)
+        const nextHopId = data.fullPath[myIdx + 1]
+        UI.appendLog('info', `Forwarding manifest to ${nextHopId.replace('_station','')}`)
+
+        const myFullBookings = (toSt.reservations || [])
+          .concat((Scheduler._windows[toSt.id]?.main ?? [])
+            .filter((w) => !w._delivered)
+            .map((w) => ({ startSec: w.startSec, endSec: w.endSec, fromId: toSt.id, toId: w.targetId, type: 'window' })))
+          .filter(b => b.endSec > resInfo.arrivalEnd - 3600)
+
+        this.enqueue(toSt.id, nextHopId, 'manifest', 1, data.fullPath, {
+          path: [toSt.id, nextHopId],
+          earliestStart: resInfo.arrivalEnd,
+          manifestData: { ...data, peerBookings: myFullBookings },
+        })
       }
     } else if (msg.type === 'manifest_ack') {
-      // Confirmation received by sender
-      if (station.id === scenario.fromId) {
-        // Source received confirmation from first hop.
-        // Once the FIRST leg is confirmed, we can start the Main booking phase
-        // (if needed) or the payload dispatch.
-        const needsMain = scenario.type === 'vessel_transit' || scenario.type === 'drone_transit'
-        if (needsMain) {
-          UI.appendLog('info', 'Route verified. Negotiating Main Conduit slots.')
-          const m = this.enqueue(scenario.fromId, scenario.toId, 'main_booking', 1, scenario.path)
-          if (m) m.conduitType = 'main'
-        } else {
-          UI.appendLog('event', `Route verified. Dispatching ${scenario.type}.`)
-          this.enqueue(scenario.fromId, scenario.toId, scenario.type, scenario.priority, scenario.path)
-          Analyst._pendingScenario = null
+      const res = msg.bookingRef
+      if (res) {
+        UI.appendLog('info', `Leg Confirmed: ${station.name.replace(' Station', '')} -> ${res.toId.replace('_station', '')} @ ${this._formatTime(res.startSec)}`)
+
+        // Match payload in queue
+        for (const msgId of station.outboundQueue) {
+            const p = Sim.messageMap[msgId]
+            if (p && p.type === scenario.type && (p.path?.[1] === res.toId || p.destinationId === scenario.toId)) {
+                p.earliestStart = res.startSec
+                p.isReserved = true
+                p.bookingRef = res
+                UI.appendLog('info', `Payload triggered at ${station.name.replace(' Station','')}`)
+            }
+        }
+
+        if (station.id === scenario.fromId) {
+          this.enqueue(station.id, scenario.toId, scenario.type, scenario.priority, scenario.path, {
+            path: [...scenario.path],
+            earliestStart: res.startSec,
+            conduitType: 'main',
+            isReserved: true,
+            bookingRef: res
+          })
         }
       }
-    } else if (msg.type === 'main_booking') {
-      // Main booking arrived (cascading)
-      const isFinal = station.id === scenario.toId
-
-      // Confirm this slot back to sender
-      const ackPath = [station.id, msg.sourceId]
-      const mAck = this.enqueue(station.id, msg.sourceId, 'main_booking_ack', 1, ackPath)
-      if (mAck) mAck.conduitType = 'main'
-
-      if (!isFinal) {
-        const myIdx = scenario.path.indexOf(station.id)
-        const nextId = scenario.path[myIdx + 1]
-        const remainingPath = scenario.path.slice(myIdx)
-
-        const m = this.enqueue(station.id, scenario.toId, 'main_booking', 1, remainingPath)
-        if (m) {
-            m.conduitType = 'main'
-            m.earliestStart = msg.actualArrival
-        }
-      }
-    } else if (msg.type === 'main_booking_ack') {
-      if (station.id === scenario.fromId) {
-        UI.appendLog('event', `Main array booked. Dispatching ${scenario.type}.`)
-        this.enqueue(scenario.fromId, scenario.toId, scenario.type, scenario.priority, scenario.path)
-        Analyst._pendingScenario = null
-      }
+    } else if (msg.type === scenario.type && station.id === scenario.toId) {
+      UI.appendLog('event', `SUCCESS: ${msg.type} reached final destination.`)
+      Analyst._pendingScenario = null
     }
   },
 }

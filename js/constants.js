@@ -61,8 +61,8 @@ const C = {
   MIN_CADENCE_S: 1,
   MAX_CADENCE_S: 86400,
   OFFLINE_MISS_COUNT: 3, // consecutive missed check-ins before marking offline
-  MAX_LOG_ENTRIES: 500,
-  MAX_MESSAGES: 5000, // accommodate heartbeats for large networks
+  MAX_LOG_ENTRIES: 2000,
+  MAX_MESSAGES: 10000, // accommodate heartbeats for large networks
 
   // ── Rendering ────────────────────────────────────────────────────────────
   // Colours

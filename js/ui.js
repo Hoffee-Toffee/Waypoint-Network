@@ -251,6 +251,7 @@ const UI = {
       s.outboundQueue = new Set()
       s.pendingCheckinDests = new Set()
       s.inboundQueue = []
+      s.reservations = []
     }
     Scheduler.init()
     tickUpdatePositions()
@@ -287,6 +288,29 @@ const UI = {
   // ── Log panel ──────────────────────────────────────────────────────────
 
   appendLog(type, text) {
+    const isAnalystTab = document.getElementById('tab-analyst').classList.contains('active')
+    const path = Analyst.activePath
+
+    if (isAnalystTab && path) {
+      const ltext = text.toLowerCase()
+      // Always show SUCCESS and Errors
+      if (ltext.includes('success') || type === 'error' || ltext.includes('relaying')) {
+          // keep
+      } else {
+        const searchTerms = path.flatMap(id => {
+            const st = Sim.stations[id]
+            if (!st) return [id.toLowerCase()]
+            return [st.name.toLowerCase().replace(' station',''), id.toLowerCase()]
+        })
+        const textMatch = searchTerms.some(term => ltext.includes(term))
+        const isProtocolMsg = ltext.includes('leg') || ltext.includes('manifest') || ltext.includes('protocol') || ltext.includes('relay')
+        const isCheckin = ltext.includes('check-in')
+
+        if (isCheckin) return // No check-ins in Analyst mode log
+        if (!textMatch && !isProtocolMsg) return
+      }
+    }
+
     const el = document.getElementById('log-entries')
     const entry = document.createElement('div')
     entry.className = 'log-entry ' + type
@@ -584,4 +608,3 @@ const UI = {
     el.addEventListener('input', (e) => setter(parseFloat(e.target.value)))
   },
 }
-
