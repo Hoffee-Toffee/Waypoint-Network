@@ -478,10 +478,10 @@ const Renderer = {
     const dist = Math.sqrt(dx * dx + dy * dy)
     const minSep = this._starRadiusPx(star) + C.STATION_DOT_RADIUS_PX + 3
     if (dist >= minSep) return rawP
-    // Not far enough — push to minSep in the orbital-phase direction
-    // Screen space: canvas-Y = -galactic-Y, so Y direction is flipped
-    const ux = dist < 0.5 ? Math.cos(station.phaseRad) : dx / dist
-    const uy = dist < 0.5 ? -Math.sin(station.phaseRad) : dy / dist
+
+    // Not far enough — push to minSep in the current position direction
+    const ux = dist < 0.5 ? 1 : dx / dist
+    const uy = dist < 0.5 ? 0 : dy / dist
     return { x: starP.x + ux * minSep, y: starP.y + uy * minSep }
   },
 

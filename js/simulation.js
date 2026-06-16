@@ -67,6 +67,9 @@ function initSimulation() {
   // Initialise scheduler window tracking
   Scheduler.init()
 
+  // Optimize orbits for resonance
+  optimizeOrbits()
+
   Renderer.init()
   Renderer.draw()
   UI.init()
@@ -97,18 +100,21 @@ function _rebuildActiveStations() {
 
 function makeStation(star) {
   const id = star.id + '_station'
+  const periapsisAU = (star.radiusM / C.AU_IN_METRES) + 0.01
   const station = {
     id,
     name: star.name + ' Station',
     starId: star.id,
 
     // Orbital parameters
-    orbitalRadiusAU: C.DEFAULT_ORBITAL_RADIUS_AU,
+    orbitalRadiusAU: periapsisAU, // Initially circular at periapsis
     orbitInclinationDeg: 0,
     orbitLANDeg: 0,
+    eccentricity: 0,
+    periapsisAU: periapsisAU,
 
     // Orbital state
-    phaseRad: Math.random() * 2 * Math.PI, // random initial phase
+    meanAnomalyRad: Math.random() * 2 * Math.PI,
 
     // Derived orbital values (filled by recomputeDerivedOrbit)
     orbitalPeriodHours: 0,
@@ -477,8 +483,8 @@ function tickFrame() {
   // 1. Advance orbital phases
   for (const station of Object.values(Sim.stations)) {
     const periodSec = station.orbitalPeriodHours * C.HOURS_TO_SECONDS
-    station.phaseRad += ((2 * Math.PI) / periodSec) * deltaSec
-    station.phaseRad %= 2 * Math.PI
+    station.meanAnomalyRad += ((2 * Math.PI) / periodSec) * deltaSec
+    station.meanAnomalyRad %= 2 * Math.PI
   }
 
   // 2. Recompute 3D world positions
@@ -538,4 +544,79 @@ function tickUpdateLOS() {
 /** Helper: find a bridge regardless of which station is A vs B in the key */
 function getBridgeForPair(idA, idB) {
   return Sim.bridges[idA + '|' + idB] || Sim.bridges[idB + '|' + idA] || null
+}
+
+function optimizeOrbits() {
+  const stations = Object.values(Sim.stations)
+  if (stations.length < 2) return
+
+  // 1. Identify "Priority Neighbor" for each station.
+  // We use the closest neighbor (from the MST).
+  const priorityNeighbor = {}
+  for (const bridge of Object.values(Sim.bridges)) {
+    const sA = bridge.stationAId
+    const sB = bridge.stationBId
+    if (!priorityNeighbor[sA] || bridge.lengthLY < priorityNeighbor[sA].dist) {
+      priorityNeighbor[sA] = { id: sB, dist: bridge.lengthLY }
+    }
+    if (!priorityNeighbor[sB] || bridge.lengthLY < priorityNeighbor[sB].dist) {
+      priorityNeighbor[sB] = { id: sA, dist: bridge.lengthLY }
+    }
+  }
+
+  const ratios = [
+    [1, 1],
+    [1, 2],
+    [2, 1],
+    [2, 3],
+    [3, 2],
+    [3, 5],
+    [5, 3],
+    [1, 3],
+    [3, 1],
+  ]
+
+  // 2. Perform relaxation to align periods to rational ratios.
+  // We'll do a few passes.
+  for (let pass = 0; pass < 3; pass++) {
+    for (const station of stations) {
+      const pnInfo = priorityNeighbor[station.id]
+      if (!pnInfo) continue
+      const neighbor = Sim.stations[pnInfo.id]
+      if (!neighbor) continue
+
+      const targetPeriod = neighbor.orbitalPeriodHours
+      // Find the best ratio p/q such that p*T_station ≈ q*T_target
+      let bestRatio = [1, 1]
+      let bestDiff = Infinity
+
+      for (const [p, q] of ratios) {
+        const candidateT = (q / p) * targetPeriod
+        // Convert back to semi-major axis to check if it's physically possible (periapsis)
+        const star = Sim.stars[station.starId]
+        const GM = C.GM_SOL * (star.massKg / 1.989e30)
+        const candidateA_m = Math.pow(((candidateT * 3600) / (2 * Math.PI)) ** 2 * GM, 1 / 3)
+        const candidateA_AU = candidateA_m / C.AU_IN_METRES
+
+        if (candidateA_AU >= station.periapsisAU) {
+          const diff = Math.abs(candidateT - station.orbitalPeriodHours)
+          if (diff < bestDiff) {
+            bestDiff = diff
+            bestRatio = [p, q]
+          }
+        }
+      }
+
+      // Adjust semi-major axis to achieve the target ratio
+      const finalT = (bestRatio[1] / bestRatio[0]) * targetPeriod
+      const star = Sim.stars[station.starId]
+      const GM = C.GM_SOL * (star.massKg / 1.989e30)
+      const finalA_m = Math.pow(((finalT * 3600) / (2 * Math.PI)) ** 2 * GM, 1 / 3)
+      station.orbitalRadiusAU = finalA_m / C.AU_IN_METRES
+      station.eccentricity = 1 - (station.periapsisAU / station.orbitalRadiusAU)
+
+      Physics.recomputeDerivedOrbit(station, star)
+    }
+  }
+  UI.appendLog('info', 'Orbital resonances optimized.')
 }

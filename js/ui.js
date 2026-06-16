@@ -21,6 +21,12 @@ const UI = {
       .getElementById('btn-reset')
       .addEventListener('click', () => this.reset())
     document
+      .getElementById('btn-sync')
+      .addEventListener('click', () => {
+        optimizeOrbits()
+        Renderer.draw()
+      })
+    document
       .getElementById('btn-fit')
       .addEventListener('click', () => Renderer.zoomToFit())
     document
@@ -64,22 +70,22 @@ const UI = {
 
     // Global physics inputs
     this._bindNumberInput('input-kappa', (v) => {
-      Sim.settings.kappa = v
+      Sim.settings.kappa = Math.pow(10, v)
     })
     this._bindNumberInput('input-lambda', (v) => {
-      Sim.settings.lambda = v
-    })
-    this._bindNumberInput('input-drone-mass', (v) => {
-      Sim.settings.droneMassKg = v
-    })
-    this._bindNumberInput('input-drone-bubble', (v) => {
-      Sim.settings.droneBubbleRadiusM = v
+      Sim.settings.lambda = Math.pow(10, v)
     })
     this._bindNumberInput('input-vessel-mass', (v) => {
       Sim.settings.vesselMassKg = v
     })
     this._bindNumberInput('input-vessel-bubble', (v) => {
       Sim.settings.vesselBubbleRadiusM = v
+    })
+    this._bindNumberInput('input-drone-mass', (v) => {
+      Sim.settings.droneMassKg = v
+    })
+    this._bindNumberInput('input-drone-bubble', (v) => {
+      Sim.settings.droneBubbleRadiusM = v
     })
     this._bindRangeInput('input-eta', (v) => {
       Sim.settings.eta = v
@@ -133,6 +139,7 @@ const UI = {
       tickUpdatePositions()
       rebuildBridgeList()
       Scheduler.init()
+      Analyst._populateSelectors()
       document.getElementById('lbl-active-stars').textContent =
         Object.keys(Sim.stations).length + ' stars active'
       Renderer.draw()
@@ -245,7 +252,7 @@ const UI = {
     Sim.messages = []
     // Re-randomise phases and clear state
     for (const s of Object.values(Sim.stations)) {
-      s.phaseRad = Math.random() * 2 * Math.PI
+      s.meanAnomalyRad = Math.random() * 2 * Math.PI
       s.lastCheckinByNeighbour = {}
       s.lastHeartbeatSent = {}
       s.outboundQueue = new Set()
@@ -293,8 +300,16 @@ const UI = {
 
     if (isAnalystTab && path) {
       const ltext = text.toLowerCase()
-      // Always show SUCCESS and Errors
-      if (ltext.includes('success') || type === 'error' || ltext.includes('relaying')) {
+      // Always show SUCCESS, Errors, and milestones
+      const isMilestone = ltext.includes('success') ||
+                          ltext.includes('confirmed') ||
+                          ltext.includes('booked') ||
+                          ltext.includes('forwarding') ||
+                          ltext.includes('initiated') ||
+                          ltext.includes('debug') ||
+                          ltext.includes('booking')
+
+      if (isMilestone || type === 'error' || ltext.includes('relaying')) {
           // keep
       } else {
         const searchTerms = path.flatMap(id => {

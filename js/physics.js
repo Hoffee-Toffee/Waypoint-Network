@@ -6,20 +6,37 @@ const Physics = {
   // ── Orbital mechanics ────────────────────────────────────────────────────
 
   /**
+   * Solve Kepler's equation M = E - e sin E for E given M and e.
+   */
+  solveKepler(M, e) {
+    let E = M
+    const tol = 1e-6
+    for (let i = 0; i < 10; i++) {
+      const delta = (E - e * Math.sin(E) - M) / (1 - e * Math.cos(E))
+      E -= delta
+      if (Math.abs(delta) < tol) break
+    }
+    return E
+  },
+
+  /**
    * Compute the 3D world position of a station in galactic-frame light-years.
    * Orbit is computed in the orbital plane, then rotated by inclination and LAN
    * into the galactic frame.
-   *
-   * Orbital plane convention:
-   *   - phase 0 → station is at (r, 0, 0) in orbital plane
-   *   - inclination 0 → orbital plane = galactic XY plane
    */
   stationWorldPos(station, star) {
-    const rLY = station.orbitalRadiusAU * C.AU_IN_LY
-    const phase = station.phaseRad
+    const a = station.orbitalRadiusAU
+    const e = station.eccentricity || 0
+    const M = station.meanAnomalyRad
+    const E = this.solveKepler(M, e)
 
-    // Position in un-rotated orbital plane
-    let pos = Vec3.of(rLY * Math.cos(phase), rLY * Math.sin(phase), 0)
+    // Position in orbital plane (X-axis toward periapsis)
+    const x_orb = a * (Math.cos(E) - e)
+    const y_orb = a * Math.sqrt(1 - e * e) * Math.sin(E)
+
+    const rLY = C.AU_IN_LY
+
+    let pos = Vec3.of(x_orb * rLY, y_orb * rLY, 0)
 
     // Rotate by LAN (around Z axis) then inclination (around the new X axis)
     const lan = station.orbitLANDeg * C.DEG_TO_RAD
@@ -36,13 +53,23 @@ const Physics = {
 
   /**
    * Compute the station's instantaneous velocity direction (unit vector)
-   * in galactic frame. This is the tangent to the orbit at the current phase,
-   * rotated by the same LAN + inclination as the position.
+   * in galactic frame.
    */
   stationVelocityDir(station, star) {
-    const phase = station.phaseRad
-    // Tangent in un-rotated orbital plane (perpendicular to radius, prograde)
-    let vel = Vec3.of(-Math.sin(phase), Math.cos(phase), 0)
+    const e = station.eccentricity || 0
+    const M = station.meanAnomalyRad
+    const E = this.solveKepler(M, e)
+
+    // Velocity in orbital plane
+    // v_x = -a * n * sin(E) / (1 - e cos(E))
+    // v_y =  a * n * sqrt(1-e^2) * cos(E) / (1 - e cos(E))
+    // We only need the direction, so we can ignore constant factors
+    const common = 1 - e * Math.cos(E)
+    let vel = Vec3.of(
+      -Math.sin(E) / common,
+      (Math.sqrt(1 - e * e) * Math.cos(E)) / common,
+      0,
+    )
 
     vel = Vec3.rotateAround(vel, Vec3.of(0, 0, 1), station.orbitLANDeg)
     const lan = station.orbitLANDeg * C.DEG_TO_RAD
@@ -115,6 +142,14 @@ const Physics = {
    * Call whenever orbitalRadiusAU changes.
    */
   recomputeDerivedOrbit(station, star) {
+    const minPeriapsis = (star.radiusM / C.AU_IN_METRES) + 0.01
+    station.periapsisAU = Math.max(minPeriapsis, station.periapsisAU || minPeriapsis)
+
+    // Maintain semi-major axis such that orbitalRadiusAU >= periapsisAU
+    // If e=0, a = periapsis. If e>0, a = periapsis / (1-e)
+    const e = station.eccentricity || 0
+    station.orbitalRadiusAU = station.periapsisAU / (1 - e)
+
     station.orbitalPeriodHours = Physics.orbitalPeriodHours(
       station.orbitalRadiusAU,
       star.massKg,
@@ -123,6 +158,7 @@ const Physics = {
       station.orbitalRadiusAU,
       star.massKg,
     )
+    // Shadow arc and flux are approximate using semi-major axis
     station.shadowArcDeg = Physics.shadowArcDeg(
       station.orbitalRadiusAU,
       star.radiusM,
@@ -143,17 +179,18 @@ const Physics = {
   },
 
   /**
-   * Calculate vessel speed in multiples of c.
-   * v = c * ((P * eta) / (kappa * M * R^2))^(1/n)
+   * Calculate FTL speed in multiples of c.
+   * v = c * ((P * eta) / ((kappa * M + lambda * D) * R^2))^(1/n)
    */
-  calculateVesselSpeed(station, massKg, bubbleRadiusM) {
+  calculateFTLSpeed(station, massKg, bubbleRadiusM, distanceLY = 0) {
     const P =
       station.solarFluxWm2 * station.solarCollectorAreaKm2 * 1e6 * 0.5 // 50% for drive
     const eta = Sim.settings.eta ?? C.DRIVE_EFFICIENCY
     const kappa = Sim.settings.kappa ?? C.KAPPA
+    const lambda = Sim.settings.lambda ?? C.LAMBDA
     const n = C.SPEED_EXPONENT
 
-    const inner = (P * eta) / (kappa * massKg * bubbleRadiusM ** 2)
+    const inner = (P * eta) / ((kappa * massKg + lambda * distanceLY) * bubbleRadiusM ** 2)
     if (inner <= 0) return 0.1 // minimum safe speed (0.1c)
     return Math.pow(inner, 1 / n)
   },
@@ -250,13 +287,17 @@ const Physics = {
    * OPPOSITE to (otherStar − hostStar) projected into the XY plane.
    */
   _losRemainingForStation(station, hostStar, otherStar) {
+    // APPROXIMATION for eccentric orbits: treat as circular for LOS estimate
     const dx = otherStar.x - hostStar.x
     const dy = otherStar.y - hostStar.y
     // Phase where station would be directly behind hostStar from otherStar
     const shadowCentrePhase = Math.atan2(dy, dx) + Math.PI
     const halfArc = (station.shadowArcDeg / 2) * C.DEG_TO_RAD
     const periodSec = station.orbitalPeriodHours * C.HOURS_TO_SECONDS
-    const φ = station.phaseRad
+
+    const e = station.eccentricity || 0
+    const E = this.solveKepler(station.meanAnomalyRad, e)
+    const φ = Math.atan2(Math.sqrt(1-e*e)*Math.sin(E), Math.cos(E)-e)
 
     // Shadow entry is halfArc before the centre (prograde direction)
     const entryPhase = shadowCentrePhase - halfArc
@@ -432,8 +473,8 @@ const Physics = {
 
     // Predict positions at future time
     const dt = timeSec - Sim.simTimeSec
-    const pI = stationI.phaseRad + (2 * Math.PI / (stationI.orbitalPeriodHours * 3600)) * dt
-    const pJ = stationJ.phaseRad + (2 * Math.PI / (stationJ.orbitalPeriodHours * 3600)) * dt
+    const pI = stationI.meanAnomalyRad + (2 * Math.PI / (stationI.orbitalPeriodHours * 3600)) * dt
+    const pJ = stationJ.meanAnomalyRad + (2 * Math.PI / (stationJ.orbitalPeriodHours * 3600)) * dt
 
     const posI = this._posAtPhase(stationI, starI, pI)
     const posJ = this._posAtPhase(stationJ, starJ, pJ)
@@ -459,9 +500,14 @@ const Physics = {
     return true
   },
 
-  _posAtPhase(station, star, phaseRad) {
-    const rLY = station.orbitalRadiusAU * C.AU_IN_LY
-    let pos = Vec3.of(rLY * Math.cos(phaseRad), rLY * Math.sin(phaseRad), 0)
+  _posAtPhase(station, star, meanAnomalyRad) {
+    const a = station.orbitalRadiusAU
+    const e = station.eccentricity || 0
+    const E = this.solveKepler(meanAnomalyRad, e)
+    const x_orb = a * (Math.cos(E) - e)
+    const y_orb = a * Math.sqrt(1 - e * e) * Math.sin(E)
+    const rLY = C.AU_IN_LY
+    let pos = Vec3.of(x_orb * rLY, y_orb * rLY, 0)
     pos = Vec3.rotateAround(pos, Vec3.of(0, 0, 1), station.orbitLANDeg)
     const lanRad = station.orbitLANDeg * C.DEG_TO_RAD
     const lineOfNodes = Vec3.norm(Vec3.of(Math.cos(lanRad), Math.sin(lanRad), 0))

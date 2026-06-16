@@ -52,9 +52,7 @@ const Analyst = {
       return
     }
 
-    const path = fromId === 'sol_station' && toId === 'sirius_station' ?
-        ['sol_station', 'proxima_centauri_station', 'sirius_station'] :
-        Scheduler._resolvePath(fromId, toId)
+    const path = Scheduler._resolvePath(fromId, toId)
     if (!path) {
       alert('No bridge path found between selected stations.')
       return
@@ -92,30 +90,33 @@ const Analyst = {
     document.getElementById('res-coord').textContent = this._formatTime(coordDelay)
     document.getElementById('res-total').textContent = this._formatTime(totalTime)
 
-    // 2. Play Scenario: Initiate Protocol Handshake (Heartbeat -> Manifest -> ACK -> Payload)
-    UI.appendLog('info', `Protocol Initiated: ${Sim.stations[fromId].name.replace(' Station','')} → ${Sim.stations[path[1]].name.replace(' Station','')}`)
-
+    // 2. Play Scenario
     this._pendingScenario = { fromId, toId, type, priority, path }
-
-    Scheduler.enqueue(fromId, path[1], 'base_check', 1)
-
     const stFrom = Sim.stations[fromId]
-    const myBookings = [...(stFrom.reservations || [])]
-    const activeWins = (Scheduler._windows[fromId]?.main ?? [])
-        .filter(w => !w._delivered)
-        .map(w => ({ startSec: w.startSec, endSec: w.endSec, fromId, toId: w.targetId, type: 'window' }))
 
-    UI.appendLog('info', `Manifest dispatched with ${myBookings.length + activeWins.length} peer bookings.`)
+    if (type === 'data') {
+        UI.appendLog('info', `Data Transfer Initiated: ${stFrom.name.replace(' Station','')} → ${Sim.stations[toId].name.replace(' Station','')}`)
+        Scheduler.enqueue(fromId, toId, type, priority, path, { path: [...path] })
+    } else {
+        UI.appendLog('info', `Protocol Initiated: ${stFrom.name.replace(' Station','')} → ${Sim.stations[path[1]].name.replace(' Station','')}`)
 
-    Scheduler.enqueue(fromId, path[1], 'manifest', 1, path, {
-        path: [fromId, path[1]],
-        manifestData: {
-            scenarioType: type,
-            scenarioPriority: priority,
-            fullPath: path,
-            peerBookings: myBookings.concat(activeWins)
-        }
-    })
+        const myBookings = [...(stFrom.reservations || [])]
+        const activeWins = (Scheduler._windows[fromId]?.main ?? [])
+            .filter(w => !w._delivered)
+            .map(w => ({ startSec: w.startSec, endSec: w.endSec, fromId, toId: w.targetId, type: 'window' }))
+
+        UI.appendLog('info', `Manifest dispatched with ${myBookings.length + activeWins.length} peer bookings.`)
+
+        Scheduler.enqueue(fromId, path[1], 'manifest', 1, path, {
+            path: [fromId, path[1]],
+            manifestData: {
+                scenarioType: type,
+                scenarioPriority: priority,
+                fullPath: path,
+                peerBookings: myBookings.concat(activeWins)
+            }
+        })
+    }
 
     if (Sim.paused) UI.play()
 

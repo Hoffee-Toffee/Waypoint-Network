@@ -14,9 +14,9 @@ const C = {
   SECONDS_TO_HOURS: 1 / 3600,
 
   // ── FTL physics defaults (uncalibrated; set via UI) ───────────────────────
-  KAPPA: 1.0, // drive constant κ  (W·c³ / kg·m²) — calibrate from reference
-  LAMBDA: 1.0, // bridge constant λ  (W / LY·m²)   — calibrate from reference
-  DRIVE_EFFICIENCY: 0.85, // η_drive default
+  KAPPA: 1e-9, // drive constant κ  (W·c³ / kg·m²) — calibrate from reference
+  LAMBDA: 1e-10, // bridge constant λ  (W / LY·m²)   — calibrate from reference
+  DRIVE_EFFICIENCY: 1.0, // η_drive default
   BRIDGE_EFFICIENCY: 0.9, // η_bridge default
   SPEED_EXPONENT: 3, // n in P_drive = κ·M·R²·(v/c)^n / η
 
@@ -39,7 +39,7 @@ const C = {
   DEFAULT_RESERVE_FLOOR: 0.2,
   DEFAULT_MATERIAL_WEIGHT: 1.0,
   DEFAULT_BASE_CADENCE_S: 3600,
-  DEFAULT_MAX_BRIDGE_LY: 12,
+  DEFAULT_MAX_BRIDGE_LY: 8,
   DEFAULT_MAX_BRIDGE_CONNECTIONS: 1000,
   DEFAULT_COMM_CONDUIT_COUNT: 8,
 
@@ -61,8 +61,8 @@ const C = {
   MIN_CADENCE_S: 1,
   MAX_CADENCE_S: 86400,
   OFFLINE_MISS_COUNT: 3, // consecutive missed check-ins before marking offline
-  MAX_LOG_ENTRIES: 2000,
-  MAX_MESSAGES: 10000, // accommodate heartbeats for large networks
+  MAX_LOG_ENTRIES: 5000,
+  MAX_MESSAGES: 20000, // accommodate heartbeats for large networks
 
   // ── Rendering ────────────────────────────────────────────────────────────
   // Colours

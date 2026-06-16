@@ -302,7 +302,7 @@ const Scheduler = {
 
       if (sourceKey === 'main') {
         if (msg.isReserved) {
-          startSec = msg.earliestStart
+          startSec = Math.max(startSec, msg.earliestStart)
           if (startSec < now - 3600) {
             UI.appendLog('error', `Reservation lapsed for ${msg.type} at ${station.name.replace(' Station','')} (Start: ${this._formatTime(startSec)}, Now: ${this._formatTime(now)})`)
             msg.status = 'failed'
@@ -433,15 +433,25 @@ const Scheduler = {
   },
 
   _getMsgSpeed(msg, station) {
+    const nextHopId = msg.path?.[1] || msg.destinationId
+    const nextSt = Sim.stations[nextHopId]
+    const distanceLY = nextSt ? Vec3.dist(station.worldPos, nextSt.worldPos) : 0
+
     if (msg.type === 'vessel_transit') {
-      return Physics.calculateVesselSpeed(
+      return Physics.calculateFTLSpeed(
         station,
         Sim.settings.vesselMassKg || C.VESSEL_MASS_KG,
         Sim.settings.vesselBubbleRadiusM || C.VESSEL_BUBBLE_RADIUS_M,
+        distanceLY
       )
     }
     if (msg.type === 'drone_transit') {
-      return C.DRONE_SPEED_C
+      return Physics.calculateFTLSpeed(
+        station,
+        Sim.settings.droneMassKg || C.DRONE_MASS_KG,
+        Sim.settings.droneBubbleRadiusM || C.DRONE_BUBBLE_RADIUS_M,
+        distanceLY
+      )
     }
     return C.COMM_SIGNAL_SPEED_C
   },
@@ -561,12 +571,15 @@ const Scheduler = {
           const currentDistLY = Vec3.dist(sA.worldPos, sB.worldPos)
           const travelSec = (currentDistLY / speedC) * C.YEAR_IN_SECONDS
 
-          if (now < w.startSec + travelSec + (w.windowSec || 0)) continue
+          // GRACE PERIOD for discrete timesteps: allow delivery if we are within one deltaSec
+          const arrivalThreshold = w.startSec + travelSec + (w.windowSec || 0)
+          if (now < arrivalThreshold - 0.001) continue
 
           msg.status = 'delivered'
           msg.actualDeparture = w.startSec
           msg.actualArrival = now
           w._delivered = true
+
 
           if (msg.type === 'base_check') {
             const fromSt = Sim.stations[msg.sourceId]
@@ -696,13 +709,17 @@ const Scheduler = {
 
       const transitType = data.scenarioType
       const speedC = this._getMsgSpeed({ type: transitType }, fromSt)
-      const distLY = Vec3.dist(fromSt.worldPos, toSt.worldPos)
+      const currentPos = Physics.stationWorldPos(fromSt, Sim.stars[fromSt.starId])
+      const targetPos = Physics.stationWorldPos(toSt, Sim.stars[toSt.starId])
+      const distLY = Vec3.dist(currentPos, targetPos)
       const transitSec = (distLY / speedC) * C.YEAR_IN_SECONDS
       const pulseSec = this._estimateWindowSec({ type: transitType })
 
       const commTransitSec = (distLY / C.COMM_SIGNAL_SPEED_C) * C.YEAR_IN_SECONDS
       const slewSecAtFrom = this._slewCost(fromSt, 'main', toSt.id)
-      const minStart = Math.max(Sim.simTimeSec + commTransitSec + slewSecAtFrom + 30, msg.earliestStart || 0)
+
+      // NO LEAD TIME needed in recursive model. Stations only book their local leg.
+      const minStart = Math.max(Sim.simTimeSec + commTransitSec + slewSecAtFrom + 30, data.vesselEarliestStart || 0)
 
       const peerBookings = data.peerBookings || []
 
@@ -749,15 +766,17 @@ const Scheduler = {
         UI.appendLog('info', `Leg Booked: ${fromSt.name.replace(' Station', '')} → ${toSt.name.replace(' Station', '')} @ ${this._formatTime(resInfo.startSec)}`)
       }
 
+      // ACK BACKWARD IMMEDIATELY to the predecessor for this leg
       this.enqueue(toSt.id, fromSt.id, 'manifest_ack', 1, data.fullPath, {
-        path: [toSt.id, fromSt.id],
-        bookingRef: resInfo,
+          path: [toSt.id, fromSt.id],
+          bookingRef: resInfo
       })
 
+      // FORWARD MANIFEST to the next station for the remainder of the trip
       if (!isFinal) {
         const myIdx = data.fullPath.indexOf(toSt.id)
         const nextHopId = data.fullPath[myIdx + 1]
-        UI.appendLog('info', `Forwarding manifest to ${nextHopId.replace('_station','')}`)
+        UI.appendLog('info', `Requesting next leg: ${toSt.name.replace(' Station','')} → ${Sim.stations[nextHopId].name.replace(' Station','')}`)
 
         const myFullBookings = (toSt.reservations || [])
           .concat((Scheduler._windows[toSt.id]?.main ?? [])
@@ -767,14 +786,17 @@ const Scheduler = {
 
         this.enqueue(toSt.id, nextHopId, 'manifest', 1, data.fullPath, {
           path: [toSt.id, nextHopId],
-          earliestStart: resInfo.arrivalEnd,
-          manifestData: { ...data, peerBookings: myFullBookings },
+          manifestData: { ...data, vesselEarliestStart: resInfo.arrivalEnd, peerBookings: myFullBookings }
         })
+      } else {
+        UI.appendLog('event', `Coordination complete for path to ${toSt.name.replace(' Station','')}.`)
       }
     } else if (msg.type === 'manifest_ack') {
       const res = msg.bookingRef
       if (res) {
-        UI.appendLog('info', `Leg Confirmed: ${station.name.replace(' Station', '')} -> ${res.toId.replace('_station', '')} @ ${this._formatTime(res.startSec)}`)
+        UI.appendLog('info', `Leg Confirmed: ${station.name.replace(' Station', '')} → ${Sim.stations[res.toId].name.replace(' Station','')} (Confirmed by ${Sim.stations[msg.sourceId].name.replace(' Station','')})`)
+
+        // NO Propagation. Each station only cares about its own confirmed departure leg.
 
         // Match payload in queue
         for (const msgId of station.outboundQueue) {
@@ -788,6 +810,8 @@ const Scheduler = {
         }
 
         if (station.id === scenario.fromId) {
+          UI.appendLog('info', `All legs confirmed. Dispatching ${scenario.type} from ${station.name.replace(' Station','')}`)
+          UI.appendLog('info', `Origin confirmed. Setting earliestStart: ${res.startSec}. simTime: ${Sim.simTimeSec}`)
           this.enqueue(station.id, scenario.toId, scenario.type, scenario.priority, scenario.path, {
             path: [...scenario.path],
             earliestStart: res.startSec,

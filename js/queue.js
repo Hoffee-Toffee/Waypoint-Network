@@ -1,4 +1,4 @@
-// queue.js — check-in generation, signal dispatch, arrival handling
+// queue.js — heartbeat generation, signal dispatch, arrival handling
 
 'use strict'
 
@@ -8,10 +8,9 @@ const Queue = {
   _lastManifestRefreshSec: -Infinity,
 
   tick(deltaSec) {
-    // 1. Generate operational check-ins — always run, regardless of background
-    //    signal setting.  Check-ins are a fundamental station behaviour, not
-    //    optional test traffic.  The background signal flag only controls
-    //    the random BgGen traffic generated below.
+    // 1. Generate operational heartbeats
+    // Each station initiates a heartbeat to its neighbors independently based on its cadence.
+    // No slave/master relationship or replies; heartbeats are purely scheduled.
     {
       const stationIds = Object.keys(Sim.stations)
       for (const sid of stationIds) {
@@ -25,7 +24,7 @@ const Queue = {
 
           const neighbour = Sim.stations[nid]
 
-          // STAGGER FIX: Use a stable hash of the pair's IDs to jitter the first check-in
+          // Initial jitter based on station pair to avoid traffic bursts
           const pairId = sid < nid ? sid + nid : nid + sid
           let hash = 0
           for (let i = 0; i < pairId.length; i++) hash = (hash << 5) - hash + pairId.charCodeAt(i)
@@ -33,16 +32,12 @@ const Queue = {
           const effectiveCadence = Math.min(station.baseCadenceSeconds, neighbour.baseCadenceSeconds)
           const jitter = Math.abs(hash % effectiveCadence)
 
-          const lastSent = station.lastHeartbeatSent[nid] ?? (jitter - effectiveCadence)
+          // Schedule the first heartbeat according to the jitter
+          const lastSent = station.lastHeartbeatSent[nid] ?? (Sim.simTimeSec + jitter - effectiveCadence)
           if (Sim.simTimeSec - lastSent < effectiveCadence) continue
-
-          // SYNCED CHECK-IN: Master-slave relationship based on ID order
-          // Only the station with the "lower" ID initiates the scheduled heartbeat.
-          if (sid > nid) continue
 
           if (station.pendingCheckinDests.has(nid)) continue
 
-          // Trigger master pulse (slave will respond upon arrival)
           Scheduler.enqueue(sid, nid, 'base_check', 3)
           station.pendingCheckinDests.add(nid)
           station.lastHeartbeatSent[nid] = Sim.simTimeSec
@@ -54,7 +49,6 @@ const Queue = {
     for (let i = Sim.signals.length - 1; i >= 0; i--) {
       const sig = Sim.signals[i]
 
-      // REAL-TIME DISTANCE TRACKING: endpoints move during transit
       const sA = Sim.stations[sig.fromId]
       const sB = Sim.stations[sig.toId]
       if (!sA || !sB) {
@@ -69,7 +63,6 @@ const Queue = {
       const t = travelTimeSec > 0 ? Math.min(1, sig.elapsedSec / travelTimeSec) : 1
       sig.t = t
 
-      // Update visual position based on CURRENT endpoint positions
       sig.fromPos = { ...sA.worldPos }
       sig.toPos = { ...sB.worldPos }
 
@@ -86,7 +79,6 @@ const Queue = {
     }
   },
 
-  // Spawn only the visual travelling dot (message already exists in Sim.messages)
   spawnSignalDot(fromStation, toStation, type, speedC) {
     const fromPos = { ...fromStation.worldPos }
     const toPos = { ...toStation.worldPos }
@@ -152,7 +144,6 @@ const Queue = {
     if (msg) {
       msg.status = 'delivered'
       msg.arrivedAt = Sim.simTimeSec
-      // Clear the pending check-in flag so the next one can be scheduled
       if (msg.type === 'base_check') {
         const fromSt = Sim.stations[msg.sourceId]
         if (fromSt?.pendingCheckinDests)
@@ -161,7 +152,6 @@ const Queue = {
     }
 
     if (sig.type === 'base_check') {
-      // Receiving station records that it heard from the sender
       toStation.lastCheckinByNeighbour[sig.fromId] = Sim.simTimeSec
 
       const fromName = fromStation.name.replace(' Station', '')
@@ -171,13 +161,7 @@ const Queue = {
         `Check-in: ${fromName} → ${toName} (${sig.distanceLY.toFixed(2)} LY)`,
       )
 
-      // SLAVE RESPONSE: fire back immediately to sync the virtual bridge.
-      const lastSent = toStation.lastHeartbeatSent?.[sig.fromId] ?? -Infinity
-      if (Sim.simTimeSec - lastSent > 60) {
-          Scheduler.enqueue(sig.toId, sig.fromId, 'base_check', 3)
-          if (toStation.lastHeartbeatSent) toStation.lastHeartbeatSent[sig.fromId] = Sim.simTimeSec
-      }
+      // No replies. Stations heartbeat on their own timers.
     }
   },
 }
-
